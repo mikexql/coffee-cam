@@ -88,14 +88,22 @@ static int ra_filter_run(ra_filter_t *filter, int value) {
 #endif
 
 #if defined(LED_GPIO_NUM)
+// void enable_led(bool en) {  // Turn LED On or Off
+//   int duty = en ? led_duty : 0;
+//   if (en && isStreaming && (led_duty > CONFIG_LED_MAX_INTENSITY)) {
+//     duty = CONFIG_LED_MAX_INTENSITY;
+//   }
+//   ledcWrite(LED_GPIO_NUM, duty);
+//   //ledc_set_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL, duty);
+//   //ledc_update_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL);
+//   log_i("Set LED intensity to %d", duty);
+// }
 void enable_led(bool en) {  // Turn LED On or Off
   int duty = en ? led_duty : 0;
   if (en && isStreaming && (led_duty > CONFIG_LED_MAX_INTENSITY)) {
     duty = CONFIG_LED_MAX_INTENSITY;
   }
-  ledcWrite(LED_GPIO_NUM, duty);
-  //ledc_set_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL, duty);
-  //ledc_update_duty(CONFIG_LED_LEDC_SPEED_MODE, CONFIG_LED_LEDC_CHANNEL);
+  ledcWrite(0, duty);  // Use channel 0, not GPIO pin number
   log_i("Set LED intensity to %d", duty);
 }
 #endif
@@ -841,13 +849,14 @@ void startCameraServer() {
 
 void setupLedFlash() {
 #if defined(LED_GPIO_NUM)
+  log_i("Setting up LED flash on GPIO %d", LED_GPIO_NUM);
   ledcAttachPin(LED_GPIO_NUM, 0);
 
   // Configure PWM channel 0 with 5 kHz frequency and 8-bit resolution
   ledcSetup(0, 5000, 8);
 
   // Optionally set initial brightness (0–255)
-  ledcWrite(0, 0);
+  ledcWrite(0, 255);
 #else
   log_i("LED flash is disabled -> LED_GPIO_NUM undefined");
 #endif

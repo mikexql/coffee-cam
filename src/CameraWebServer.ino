@@ -10,6 +10,8 @@
 // ===========================
 // Enter your WiFi credentials
 // ===========================
+const char *ssid = HOTSPOT_SSID;
+const char *password = HOTSPOT_PASSWORD;
 
 void startCameraServer();
 void setupLedFlash();
@@ -102,6 +104,7 @@ void setup() {
 
 // Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
+  Serial.println("Setting up LED flash");
   setupLedFlash();
 #endif
 
