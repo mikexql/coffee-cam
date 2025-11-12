@@ -856,7 +856,7 @@ void setupLedFlash() {
   ledcSetup(0, 5000, 8);
 
   // Optionally set initial brightness (0–255)
-  ledcWrite(0, 255);
+  ledcWrite(0, 50);
 #else
   log_i("LED flash is disabled -> LED_GPIO_NUM undefined");
 #endif

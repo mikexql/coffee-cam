@@ -1,6 +1,9 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "secrets.h"
+#include "Adafruit_VL53L0X.h"
+#include <Adafruit_NeoPixel.h>
+#include <Wire.h>
 
 // ===========================
 // Select camera model in board_config.h
@@ -13,6 +16,15 @@
 const char *ssid = HOTSPOT_SSID;
 const char *password = HOTSPOT_PASSWORD;
 
+// --- VL53L0X on custom I2C pins ---
+// scl = IO13
+// sda = IO4
+static constexpr int SDA_PIN = 4;
+static constexpr int SCL_PIN = 13;
+
+Adafruit_VL53L0X lox;
+
+// Forward decls
 void startCameraServer();
 void setupLedFlash();
 
@@ -21,6 +33,7 @@ void setup() {
   Serial.setDebugOutput(true);
   Serial.println();
 
+  // ===== Camera config =====
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -43,26 +56,21 @@ void setup() {
   config.xclk_freq_hz = 20000000;
   config.frame_size = FRAMESIZE_UXGA;
   config.pixel_format = PIXFORMAT_JPEG;  // for streaming
-  //config.pixel_format = PIXFORMAT_RGB565; // for face detection/recognition
   config.grab_mode = CAMERA_GRAB_WHEN_EMPTY;
   config.fb_location = CAMERA_FB_IN_PSRAM;
   config.jpeg_quality = 12;
   config.fb_count = 1;
 
-  // if PSRAM IC present, init with UXGA resolution and higher JPEG quality
-  //                      for larger pre-allocated frame buffer.
   if (config.pixel_format == PIXFORMAT_JPEG) {
     if (psramFound()) {
       config.jpeg_quality = 10;
       config.fb_count = 2;
       config.grab_mode = CAMERA_GRAB_LATEST;
     } else {
-      // Limit the frame size when PSRAM is not available
       config.frame_size = FRAMESIZE_SVGA;
       config.fb_location = CAMERA_FB_IN_DRAM;
     }
   } else {
-    // Best option for face detection/recognition
     config.frame_size = FRAMESIZE_240X240;
 #if CONFIG_IDF_TARGET_ESP32S3
     config.fb_count = 2;
@@ -74,21 +82,20 @@ void setup() {
   pinMode(14, INPUT_PULLUP);
 #endif
 
-  // camera init
+  // Camera init
   esp_err_t err = esp_camera_init(&config);
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
+    // Don't return yet; we can still try I2C/ToF if you want. But typically we exit:
     return;
   }
 
   sensor_t *s = esp_camera_sensor_get();
-  // initial sensors are flipped vertically and colors are a bit saturated
   if (s->id.PID == OV3660_PID) {
-    s->set_vflip(s, 1);        // flip it back
-    s->set_brightness(s, 1);   // up the brightness just a bit
-    s->set_saturation(s, -2);  // lower the saturation
+    s->set_vflip(s, 1);
+    s->set_brightness(s, 1);
+    s->set_saturation(s, -2);
   }
-  // drop down frame size for higher initial frame rate
   if (config.pixel_format == PIXFORMAT_JPEG) {
     s->set_framesize(s, FRAMESIZE_QVGA);
   }
@@ -102,12 +109,26 @@ void setup() {
   s->set_vflip(s, 1);
 #endif
 
-// Setup LED FLash if LED pin is defined in camera_pins.h
 #if defined(LED_GPIO_NUM)
   Serial.println("Setting up LED flash");
   setupLedFlash();
 #endif
 
+  // ===== I2C + VL53L0X init =====
+  // IMPORTANT: Wire.begin takes (SDA, SCL)
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000); // 400kHz Fast Mode for snappier transactions
+
+  Serial.print("Bringing up VL53L0X... ");
+  if (!lox.begin()) {
+    Serial.println("FAILED (check wiring, power, and address)");
+    // Optional: halt here if ToF is required
+    // while (1) delay(10);
+  } else {
+    Serial.println("OK");
+  }
+
+  // ===== WiFi + Camera server =====
   WiFi.begin(ssid, password);
   WiFi.setSleep(false);
 
@@ -116,7 +137,7 @@ void setup() {
     delay(500);
     Serial.print(".");
   }
-  Serial.println("");
+  Serial.println();
   Serial.println("WiFi connected");
 
   startCameraServer();
@@ -127,6 +148,28 @@ void setup() {
 }
 
 void loop() {
-  // Do nothing. Everything is done in another task by the web server
-  delay(10000);
+  // Non-blocking-ish VL53L0X read every ~250 ms so the web server stays responsive.
+  static uint32_t last = 0;
+  uint32_t now = millis();
+  if (now - last >= 5000) {
+    last = now;
+
+    if (WiFi.status() != WL_CONNECTED) {
+      // Optional: try to reconnect here if you like
+    }
+
+    // Take a ranging measurement
+    VL53L0X_RangingMeasurementData_t measure;
+    lox.rangingTest(&measure, false); // pass 'true' to get debug prints from the driver
+
+    if (measure.RangeStatus == 0) { // 0 = valid
+      Serial.printf("ToF distance: %d mm\n", measure.RangeMilliMeter);
+    } else {
+      // Status codes >0 indicate issues like out of range / wrap-around / etc.
+      Serial.printf("ToF status: %d (no valid reading)\n", measure.RangeStatus);
+    }
+  }
+
+  // Yield to background tasks (WiFi/Web server)
+  delay(1);
 }
