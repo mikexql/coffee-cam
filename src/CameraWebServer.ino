@@ -6,6 +6,30 @@
 #include "board_config.h"
 #include "microfoam_logic.h"
 
+#include <milk_inferencing.h>
+#include "edge-impulse-sdk/dsp/image/image.hpp"
+
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+#include "esp_log.h"
+
+#include <stdarg.h>
+#include "edge-impulse-sdk/porting/ei_classifier_porting.h"
+
+EI_IMPULSE_ERROR ei_run_impulse_check_canceled() {
+    return EI_IMPULSE_OK;
+}
+
+void *ei_calloc(size_t nitems, size_t size) {
+    // FORCE allocation in External PSRAM
+    return heap_caps_calloc(nitems, size, MALLOC_CAP_SPIRAM);
+}
+
+void ei_free(void *ptr) {
+    free(ptr);
+}
+
 // Define I2C Pins for ToF
 #define TOF_SDA 14
 #define TOF_SCL 3
@@ -13,9 +37,46 @@
 // Global instances
 OV5640 ov5640 = OV5640();
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-MicrofoamResult currentResult = {{0,0,0}, 0, 0, 0, 0, 0, 0, 0.0, "--", NULL};
+
+// Initialize ALL fields: raw, avg, empty, start, end, init, final, pct, status, LABEL, CONF, FB
+MicrofoamResult currentResult = {{0,0,0}, 0, 0, 0, 0, 0, 0, 0.0, "--", "--", 0.0, NULL};
+
+// Global helper for AI buffer
+static camera_fb_t *loop_fb = NULL;
 
 void startCameraServer(); //refer to app_httpd
+
+// --- AI Helper Function ---
+int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
+  if (!loop_fb || !loop_fb->buf) return -1;
+
+  size_t resized_buf_len = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3;
+  
+  // Allocate in PSRAM
+  uint8_t *temp_resized_buf = (uint8_t *)heap_caps_malloc(resized_buf_len, MALLOC_CAP_SPIRAM);
+
+  if (!temp_resized_buf) {
+    Serial.println("ERR: Resize Buffer OOM");
+    return -1;
+  }
+
+  int result = ei::image::processing::resize_image(
+    loop_fb->buf, loop_fb->width, loop_fb->height,
+    temp_resized_buf, EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, 2
+  );
+
+  if (result != 0) {
+    free(temp_resized_buf);
+    return -1;
+  }
+
+  for (size_t i = 0; i < length; i++) {
+    out_ptr[i] = (float)temp_resized_buf[i + offset];
+  }
+
+  free(temp_resized_buf);
+  return 0;
+}
 
 // --- Measurement Module ---
 int getAveragedDistance(int readings[3]) {
@@ -75,6 +136,8 @@ void captureToResult() {
 
   Serial.printf("Focus Complete. Status: 0x%02X\n", status);
 
+  delay(500);
+
   //clear buffer: if there is a picture in buffer, return frame buffer to be reused again
   if(currentResult.fb) {
     esp_camera_fb_return(currentResult.fb);
@@ -104,6 +167,46 @@ void captureToResult() {
   }
 
   Serial.printf("Success! Photo size: %zu bytes\n", currentResult.fb->len);
+  s->set_reg(s, 0x3008, 0xff, 0x42);
+  delay(500);
+
+  // --- START AI INFERENCE ---
+  Serial.println("Running Inference...");
+  
+  // Set global pointer so callback can read it
+  loop_fb = currentResult.fb;
+
+  signal_t signal;
+  signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
+  signal.get_data = &raw_feature_get_data;
+
+  ei_impulse_result_t result = { 0 };
+  EI_IMPULSE_ERROR err = run_classifier(&signal, &result, false);
+
+  if (err != EI_IMPULSE_OK) {
+      Serial.printf("ERR: Classifier failed (%d)\n", err);
+      currentResult.ml_label = "Error";
+      currentResult.ml_confidence = 0.0;
+  } else {
+      // Find highest confidence prediction
+      float max_val = 0.0;
+      int best_idx = 0;
+      for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+          if (result.classification[ix].value > max_val) {
+              max_val = result.classification[ix].value;
+              best_idx = ix;
+          }
+      }
+      
+      currentResult.ml_label = result.classification[best_idx].label;
+      currentResult.ml_confidence = max_val;
+      
+      Serial.printf("Prediction: %s (%.2f)\n", currentResult.ml_label, currentResult.ml_confidence);
+  }
+  
+  // Clear global pointer (don't free the FB yet, webserver needs it!)
+  loop_fb = NULL;
+  // --- END AI INFERENCE ---
 
   // E. GO TO SLEEP (Cool down)
   s->set_reg(s, 0x3008, 0xff, 0x42);
@@ -162,9 +265,13 @@ void performAction(String cmd) {
 }
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable Brownout Detector
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
+  //Serial.setDebugOutput(true);
   Serial.println();
+
+  esp_log_level_set("camera", ESP_LOG_NONE); 
+  esp_log_level_set("cam_hal", ESP_LOG_NONE);
 
   Serial.println("Initializing VL53L0X Sensor...");
   Wire.setPins(TOF_SDA, TOF_SCL); //use setPins first and call later
@@ -197,11 +304,10 @@ void setup() {
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 24000000;
-  config.frame_size = FRAMESIZE_VGA;
-  config.pixel_format = PIXFORMAT_JPEG;
+  config.frame_size = FRAMESIZE_QVGA;
+  config.pixel_format = PIXFORMAT_RGB565;
   config.grab_mode = CAMERA_GRAB_LATEST;
   config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 3;
   config.fb_count = 2;
 
   //initialise camera with config settings defined above

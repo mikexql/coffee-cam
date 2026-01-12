@@ -14,6 +14,8 @@ struct MicrofoamResult {
   int final_h;
   float pct;
   const char* status;
+  const char* ml_label;
+  float ml_confidence;
   camera_fb_t * fb; 
 };
 
