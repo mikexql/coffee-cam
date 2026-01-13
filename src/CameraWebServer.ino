@@ -351,7 +351,8 @@ void setup() {
   esp_err_t err = esp_camera_init(&config); 
 
   if (err != ESP_OK) {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.printf("Camera init failed with error 0x%x\n", err);
+    // Don't return yet; we can still try I2C/ToF if you want. But typically we exit:
     return;
   }
 
@@ -378,6 +379,21 @@ void setup() {
     }
   }
 
+  // ===== I2C + VL53L0X init =====
+  // IMPORTANT: Wire.begin takes (SDA, SCL)
+  Wire.begin(SDA_PIN, SCL_PIN);
+  Wire.setClock(400000); // 400kHz Fast Mode for snappier transactions
+
+  Serial.print("Bringing up VL53L0X... ");
+  if (!lox.begin()) {
+    Serial.println("FAILED (check wiring, power, and address)");
+    // Optional: halt here if ToF is required
+    // while (1) delay(10);
+  } else {
+    Serial.println("OK");
+  }
+
+  // ===== WiFi + Camera server =====
   WiFi.begin(ssid, password);
   WiFi.setSleep(false); //Wifi active 100% of the time
 
