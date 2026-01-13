@@ -9,6 +9,272 @@
 // Select camera model in board_config.h
 // ===========================
 #include "board_config.h"
+#include "microfoam_logic.h"
+
+#include <milk_inferencing.h>
+#include "edge-impulse-sdk/dsp/image/image.hpp"
+
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
+
+#include "esp_log.h"
+
+#include <stdarg.h>
+#include "edge-impulse-sdk/porting/ei_classifier_porting.h"
+
+// Define I2C Pins for ToF
+#define TOF_SDA 14
+#define TOF_SCL 3
+
+// Global instances
+OV5640 ov5640 = OV5640();
+Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+
+// Initialize all fields of microfoam_logic
+MicrofoamResult currentResult = {{0,0,0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
+
+// Global helper for AI buffer
+static camera_fb_t *loop_fb = NULL;
+
+void startCameraServer(); //refer to app_httpd
+
+// --- AI Helper Function ---
+int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
+  if (!loop_fb || !loop_fb->buf) return -1;
+
+  size_t resized_buf_len = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3;
+  
+  // Allocate in PSRAM
+  uint8_t *temp_resized_buf = (uint8_t *)heap_caps_malloc(resized_buf_len, MALLOC_CAP_SPIRAM);
+
+  if (!temp_resized_buf) {
+    Serial.println("ERR: Resize Buffer OOM");
+    return -1;
+  }
+
+  int result = ei::image::processing::resize_image(
+    loop_fb->buf, loop_fb->width, loop_fb->height,
+    temp_resized_buf, EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, 2
+  );
+
+  if (result != 0) {
+    free(temp_resized_buf);
+    return -1;
+  }
+
+  for (size_t i = 0; i < length; i++) {
+    out_ptr[i] = (float)temp_resized_buf[i + offset];
+  }
+
+  free(temp_resized_buf);
+  return 0;
+}
+
+// --- Measurement Module ---
+int getAveragedDistance(int readings[3]) {
+  long sum = 0;
+  int valid = 0;
+
+  //take 3 readings to get average
+  for (int i = 0; i < 3; i++) {
+    VL53L0X_RangingMeasurementData_t measure;
+    lox.rangingTest(&measure, false); //triggers ToF laser
+
+    //status 4 means out of range 
+    if (measure.RangeStatus != 4) { 
+      readings[i] = measure.RangeMilliMeter;
+      sum += readings[i];
+      valid++;
+    } 
+    
+    else {
+      readings[i] = -1; //mark reading as invalid
+    }
+
+    delay(100);
+  }
+
+  return (valid > 0) ? (int)(sum / valid) : 0; //return only if more than 1 valid reading to prevent division by 0
+}
+
+// --- Camera Module ---
+void captureToResult() {
+  sensor_t *s = esp_camera_sensor_get();
+
+  // WAKE UP
+  s->set_reg(s, 0x3008, 0xff, 0x02);
+  vTaskDelay(300 / portTICK_PERIOD_MS);
+  Serial.println("Sensor turned on");
+
+  // 1. Trigger Single Focus Search
+  Serial.println("Starting Autofocus...");
+  s->set_reg(s, 0x3023, 0xff, 0x01); // Handshake ACK 
+  s->set_reg(s, 0x3022, 0xff, 0x03); // Single Focus Command 
+
+  // 2. Wait for focus to finish 
+  uint8_t status = 0x10; // Register 0x3029 is 0x10 while the motor is moving
+  unsigned long startTime = millis();
+
+  while (status == 0x10) {
+    status = s->get_reg(s, 0x3029, 0xff); //get all 8 bits of register data (0xff = all 8 bits)
+
+    if (millis() - startTime > 5000) { // 5 second timeout
+      Serial.println("Focus Timeout!");
+      break;
+    }
+
+    delay(100);
+  }
+
+  Serial.printf("Focus Complete. Status: 0x%02X\n", status);
+
+  delay(500);
+
+  //clear buffer: if there is a picture in buffer, return frame buffer to be reused again
+  if(currentResult.fb) {
+    esp_camera_fb_return(currentResult.fb);
+    currentResult.fb = NULL;
+  }
+
+  //at the current focal length, flush buffer by taking 3 pictures to get rid of out of focus pictures
+  for (int i = 0; i < 3; i++) {
+    camera_fb_t * temp_fb = esp_camera_fb_get();
+
+    if(temp_fb) {
+      esp_camera_fb_return(temp_fb);
+    }
+
+    vTaskDelay(150 / portTICK_PERIOD_MS); // Small gap for stability 
+  } 
+
+  // 3. Capture photo and store it in the Shared Result Object
+  Serial.println("Capturing Photo...");
+  currentResult.fb = esp_camera_fb_get(); 
+
+  if (!currentResult.fb) {
+    Serial.println("Camera capture failed");
+    s->set_reg(s, 0x3008, 0xff, 0x42);
+    Serial.println("Sensor in Sleep Mode.");
+    return;
+  }
+
+  Serial.printf("Success! Photo size: %zu bytes\n", currentResult.fb->len);
+  s->set_reg(s, 0x3008, 0xff, 0x42);
+  delay(500);
+
+  // --- START AI INFERENCE ---
+  Serial.println("Running Inference...");
+  
+  // Set global pointer so callback can read it
+  loop_fb = currentResult.fb;
+
+  signal_t signal;
+  signal.total_length = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT;
+  signal.get_data = &raw_feature_get_data;
+
+  ei_impulse_result_t result = { 0 };
+  EI_IMPULSE_ERROR err = run_classifier(&signal, &result, false);
+
+  if (err != EI_IMPULSE_OK) {
+      Serial.printf("ERR: Classifier failed (%d)\n", err);
+      currentResult.ml_label = "Error";
+      currentResult.ml_confidence = 0.0;
+  } else {
+      // Find highest confidence prediction
+      float max_val = 0.0;
+      int best_idx = 0;
+      for (size_t ix = 0; ix < EI_CLASSIFIER_LABEL_COUNT; ix++) {
+          if (result.classification[ix].value > max_val) {
+              max_val = result.classification[ix].value;
+              best_idx = ix;
+          }
+      }
+      
+      currentResult.ml_label = result.classification[best_idx].label;
+      currentResult.ml_confidence = max_val;
+      
+      Serial.printf("Prediction: %s (%.2f)\n", currentResult.ml_label, currentResult.ml_confidence);
+  }
+  
+  // Clear global pointer (don't free the FB yet, webserver needs it!)
+  loop_fb = NULL;
+  // --- END AI INFERENCE ---
+
+  // E. GO TO SLEEP (Cool down)
+  s->set_reg(s, 0x3008, 0xff, 0x42);
+  Serial.println("Sensor in Sleep Mode.");
+}
+
+// --- Lookup Table & Helpers ---
+const int heightsAt10mlSteps[] = {
+    160,  // 0ml
+    160,  // 10ml 
+    159,  // 20ml 
+    158, // 30ml 
+    157, // 40ml
+    156, // 50ml
+    153, // 60ml
+    153, // 70ml
+    150, // 80ml
+    148, // 90ml
+    145, // 100ml
+    144,  // 110ml 
+    141,  // 120ml 
+    139, // 130ml 
+    136, // 140ml
+    134, // 150ml
+    132, // 160ml
+    130, // 170ml
+    128, // 180ml
+    125, // 190ml
+    122, // 200ml
+};
+
+// Calculate total array size automatically
+const int lutSize = sizeof(heightsAt10mlSteps) / sizeof(heightsAt10mlSteps[0]);
+
+float getVolumeFromHeight(int measured_h) {
+    if (measured_h <= 0) return 0.0;
+
+    // 1. Iterate through the table to find where this height fits
+    for (int i = 0; i < lutSize - 1; i++) {
+        int h_low = heightsAt10mlSteps[i];
+        int h_high = heightsAt10mlSteps[i+1];
+
+        // Check if our measurement falls between these two steps
+        if (measured_h >= h_low && measured_h <= h_high) {
+            
+            // 2. Interpolate: Calculate exactly where we are between the two steps
+            float range = h_high - h_low;
+            float diff = measured_h - h_low;
+            float fraction = diff / range; // e.g., 0.5 if we are halfway
+
+            // Base volume is index * 10ml
+            float vol_low = i * 10.0; 
+            
+            return vol_low + (fraction * 10.0);
+        }
+    }
+
+    // Fallback: If height is higher than our table goes, extrapolate
+    return (lutSize - 1) * 10.0; 
+}
+
+// --- Logic Module ---
+void performAction(String cmd) {
+  if (cmd == "reset") {
+    currentResult.start = 0;
+    currentResult.end = 0;
+    currentResult.status = "--";
+    return;
+  }
+
+  int avg = getAveragedDistance(currentResult.raw);
+  currentResult.avg = avg;
+
+  if (cmd == "empty") {
+    currentResult.empty = avg;
+  }
 
 // ===========================
 // Enter your WiFi credentials
@@ -29,8 +295,9 @@ void startCameraServer();
 void setupLedFlash();
 
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Disable Brownout Detector
   Serial.begin(115200);
-  Serial.setDebugOutput(true);
+  //Serial.setDebugOutput(true);
   Serial.println();
 
   // ===== Camera config =====
@@ -77,10 +344,9 @@ void setup() {
 #endif
   }
 
-#if defined(CAMERA_MODEL_ESP_EYE)
-  pinMode(13, INPUT_PULLUP);
-  pinMode(14, INPUT_PULLUP);
-#endif
+  //initialise camera with config settings defined above
+  //esp_camera_init expected to return "ESP_OK"
+  esp_err_t err = esp_camera_init(&config); 
 
   // Camera init
   esp_err_t err = esp_camera_init(&config);
@@ -100,14 +366,15 @@ void setup() {
     s->set_framesize(s, FRAMESIZE_QVGA);
   }
 
-#if defined(CAMERA_MODEL_M5STACK_WIDE) || defined(CAMERA_MODEL_M5STACK_ESP32CAM)
-  s->set_vflip(s, 1);
-  s->set_hmirror(s, 1);
-#endif
+    // 2. Load AF firmware
+    if (ov5640.focusInit() == 0) {
+      Serial.println("OV5640 Focus Init Successful");
+    }
 
-#if defined(CAMERA_MODEL_ESP32S3_EYE)
-  s->set_vflip(s, 1);
-#endif
+    //3. Start AF
+    if (ov5640.autoFocusMode() == 0) {
+      Serial.println("OV5640_Auto_Focus Successful!");
+    }
 
 #if defined(LED_GPIO_NUM)
   Serial.println("Setting up LED flash");
@@ -130,9 +397,10 @@ void setup() {
 
   // ===== WiFi + Camera server =====
   WiFi.begin(ssid, password);
-  WiFi.setSleep(false);
+  WiFi.setSleep(false); //Wifi active 100% of the time
 
   Serial.print("WiFi connecting");
+
   while (WiFi.status() != WL_CONNECTED) {
     delay(500);
     Serial.print(".");
@@ -140,9 +408,9 @@ void setup() {
   Serial.println();
   Serial.println("WiFi connected");
 
-  startCameraServer();
+  startCameraServer(); //launch button for web interface: refer to app_httpd
 
-  Serial.print("Camera Ready! Use 'http://");
+  Serial.print("Use 'http://"); 
   Serial.print(WiFi.localIP());
   Serial.println("' to connect");
 }
