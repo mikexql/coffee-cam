@@ -16,6 +16,7 @@ static esp_err_t index_handler(httpd_req_t *req) {
 
 static esp_err_t action_handler(httpd_req_t *req) {
   char cmd[32] = {0};
+  char vol_str[32] = "0"; // <--- THIS WAS MISSING! Default to "0" string.
   char* buf;
   size_t buf_len = httpd_req_get_url_query_len(req) + 1;
 
@@ -23,21 +24,28 @@ static esp_err_t action_handler(httpd_req_t *req) {
     buf = (char*)malloc(buf_len);
     if (httpd_req_get_url_query_str(req, buf, buf_len) == ESP_OK) {
       httpd_query_key_value(buf, "cmd", cmd, sizeof(cmd));
+      
+      // Now this works because vol_str is declared
+      httpd_query_key_value(buf, "vol", vol_str, sizeof(vol_str)); 
     }
     free(buf);
   }
 
+  // Update currentResult with the manual volume
+  // If "vol" wasn't in the URL, it uses the default "0", so atof returns 0.0
+  currentResult.liquid_v = atof(vol_str); 
+
   performAction(String(cmd));
 
   // Package the results into JSON (Include AI Data!)
-  char json[400]; // Increased buffer size
+  char json[400]; 
 
   sprintf(json, 
     "{\"raw\":[%d,%d,%d],\"avg\":%d,\"empty\":%d,\"start\":%d,\"end\":%d,\"init_h\":%d,\"final_h\":%d,\"pct\":%.1f,\"status\":\"%s\",\"ml_label\":\"%s\",\"ml_conf\":%.2f}",
     currentResult.raw[0], currentResult.raw[1], currentResult.raw[2], currentResult.avg,
     currentResult.empty, currentResult.start, currentResult.end,
     currentResult.init_h, currentResult.final_h, currentResult.pct, currentResult.status,
-    currentResult.ml_label, currentResult.ml_confidence // Added AI fields
+    currentResult.ml_label, currentResult.ml_confidence 
   );
 
   httpd_resp_set_type(req, "application/json");

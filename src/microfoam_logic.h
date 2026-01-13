@@ -12,6 +12,7 @@ struct MicrofoamResult {
   int end;
   int init_h;
   int final_h;
+  float liquid_v;
   float pct;
   const char* status;
   const char* ml_label;

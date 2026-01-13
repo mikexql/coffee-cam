@@ -17,19 +17,6 @@
 #include <stdarg.h>
 #include "edge-impulse-sdk/porting/ei_classifier_porting.h"
 
-EI_IMPULSE_ERROR ei_run_impulse_check_canceled() {
-    return EI_IMPULSE_OK;
-}
-
-void *ei_calloc(size_t nitems, size_t size) {
-    // FORCE allocation in External PSRAM
-    return heap_caps_calloc(nitems, size, MALLOC_CAP_SPIRAM);
-}
-
-void ei_free(void *ptr) {
-    free(ptr);
-}
-
 // Define I2C Pins for ToF
 #define TOF_SDA 14
 #define TOF_SCL 3
@@ -38,8 +25,8 @@ void ei_free(void *ptr) {
 OV5640 ov5640 = OV5640();
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
 
-// Initialize ALL fields: raw, avg, empty, start, end, init, final, pct, status, LABEL, CONF, FB
-MicrofoamResult currentResult = {{0,0,0}, 0, 0, 0, 0, 0, 0, 0.0, "--", "--", 0.0, NULL};
+// Initialize all fields of microfoam_logic
+MicrofoamResult currentResult = {{0,0,0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
 
 // Global helper for AI buffer
 static camera_fb_t *loop_fb = NULL;
@@ -213,6 +200,61 @@ void captureToResult() {
   Serial.println("Sensor in Sleep Mode.");
 }
 
+// --- Lookup Table & Helpers ---
+const int heightsAt10mlSteps[] = {
+    160,  // 0ml
+    160,  // 10ml 
+    159,  // 20ml 
+    158, // 30ml 
+    157, // 40ml
+    156, // 50ml
+    153, // 60ml
+    153, // 70ml
+    150, // 80ml
+    148, // 90ml
+    145, // 100ml
+    144,  // 110ml 
+    141,  // 120ml 
+    139, // 130ml 
+    136, // 140ml
+    134, // 150ml
+    132, // 160ml
+    130, // 170ml
+    128, // 180ml
+    125, // 190ml
+    122, // 200ml
+};
+
+// Calculate total array size automatically
+const int lutSize = sizeof(heightsAt10mlSteps) / sizeof(heightsAt10mlSteps[0]);
+
+float getVolumeFromHeight(int measured_h) {
+    if (measured_h <= 0) return 0.0;
+
+    // 1. Iterate through the table to find where this height fits
+    for (int i = 0; i < lutSize - 1; i++) {
+        int h_low = heightsAt10mlSteps[i];
+        int h_high = heightsAt10mlSteps[i+1];
+
+        // Check if our measurement falls between these two steps
+        if (measured_h >= h_low && measured_h <= h_high) {
+            
+            // 2. Interpolate: Calculate exactly where we are between the two steps
+            float range = h_high - h_low;
+            float diff = measured_h - h_low;
+            float fraction = diff / range; // e.g., 0.5 if we are halfway
+
+            // Base volume is index * 10ml
+            float vol_low = i * 10.0; 
+            
+            return vol_low + (fraction * 10.0);
+        }
+    }
+
+    // Fallback: If height is higher than our table goes, extrapolate
+    return (lutSize - 1) * 10.0; 
+}
+
 // --- Logic Module ---
 void performAction(String cmd) {
   if (cmd == "reset") {
@@ -228,39 +270,33 @@ void performAction(String cmd) {
   if (cmd == "empty") {
     currentResult.empty = avg;
   }
-  
-  else if (cmd == "start") {
-    currentResult.start = avg;
-  }
 
   else if (cmd == "end") {
     currentResult.end = avg;
-    captureToResult(); // Trigger camera immediately with ToF
-  }
-
-  // Calculate math
-  if (currentResult.empty > 0 && currentResult.start > 0) {
-    currentResult.init_h = currentResult.empty - currentResult.start;
-  }
-
-  if (currentResult.empty > 0 && currentResult.end > 0) {
     currentResult.final_h = currentResult.empty - currentResult.end;
-  }
 
-  if (currentResult.init_h > 0 && currentResult.final_h > 0) {
-    currentResult.pct = ((float)(currentResult.final_h - currentResult.init_h) / currentResult.init_h) * 100.0;
-
-    if (currentResult.pct < 50.0) {
-      currentResult.status = "UNDERFROTHED";
-    }
-
-    else if (currentResult.pct <= 100.0) {
-      currentResult.status = "WELL FROTHED";
-    }
-  
+    // 1. Convert height to total volume using LUT
+    float totalVolume = getVolumeFromHeight(currentResult.final_h);
+    
+    // 2. Expansion % = ((Total Vol - Liquid Vol) / Liquid Vol) * 100
+    if (currentResult.liquid_v > 0) {
+        currentResult.pct = ((totalVolume - currentResult.liquid_v) / currentResult.liquid_v) * 100.0;
+    } 
     else {
-      currentResult.status = "OVERFROTHED";
+        // Fallback if user forgot to enter volume: Use old Height math
+        if (currentResult.init_h > 0) {
+            currentResult.pct = ((float)(currentResult.final_h - currentResult.init_h) / currentResult.init_h) * 100.0;
+        } else {
+            currentResult.pct = 0;
+        }
     }
+
+    // 3. Status Logic
+    if (currentResult.pct < 10) currentResult.status = "UNDERFROTHED";
+    else if (currentResult.pct > 50) currentResult.status = "OVERLY FROTHY";
+    else currentResult.status = "WELL FROTHED";
+
+    captureToResult(); // Trigger camera immediately with ToF
   }
 }
 
