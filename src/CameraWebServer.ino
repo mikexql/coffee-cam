@@ -33,35 +33,50 @@ static camera_fb_t *loop_fb = NULL;
 
 void startCameraServer(); //refer to app_httpd
 
-// --- AI Helper Function ---
+// --- REPLACEMENT AI Helper: Center Crops then Resizes ---
 int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
   if (!loop_fb || !loop_fb->buf) return -1;
 
-  size_t resized_buf_len = EI_CLASSIFIER_INPUT_WIDTH * EI_CLASSIFIER_INPUT_HEIGHT * 3;
-  
-  // Allocate in PSRAM
-  uint8_t *temp_resized_buf = (uint8_t *)heap_caps_malloc(resized_buf_len, MALLOC_CAP_SPIRAM);
+  // 1. Calculate Crop Offsets (Fit Shortest Axis)
+  // We identify the 240x240 square in the center of the 320x240 image.
+  int min_dim = (loop_fb->width < loop_fb->height) ? loop_fb->width : loop_fb->height; // 240
+  int start_x = (loop_fb->width - min_dim) / 2; // (320 - 240) / 2 = 40 pixels (Left/Right Crop)
+  int start_y = (loop_fb->height - min_dim) / 2; // 0 pixels (Top/Bottom Crop)
 
-  if (!temp_resized_buf) {
-    Serial.println("ERR: Resize Buffer OOM");
-    return -1;
-  }
-
-  int result = ei::image::processing::resize_image(
-    loop_fb->buf, loop_fb->width, loop_fb->height,
-    temp_resized_buf, EI_CLASSIFIER_INPUT_WIDTH, EI_CLASSIFIER_INPUT_HEIGHT, 2
-  );
-
-  if (result != 0) {
-    free(temp_resized_buf);
-    return -1;
-  }
-
+  // 2. Iterate through the AI's requested pixels (96x96)
   for (size_t i = 0; i < length; i++) {
-    out_ptr[i] = (float)temp_resized_buf[i + offset];
+      // A. Calculate which pixel the AI needs (0..96)
+      int x_model = (offset + i) % EI_CLASSIFIER_INPUT_WIDTH;
+      int y_model = (offset + i) / EI_CLASSIFIER_INPUT_WIDTH;
+
+      // B. Map that model pixel to the CROP window in the camera buffer
+      // instead of the full width. This effectively "zooms in" to the center.
+      int x_cam = start_x + (x_model * min_dim) / EI_CLASSIFIER_INPUT_WIDTH;
+      int y_cam = start_y + (y_model * min_dim) / EI_CLASSIFIER_INPUT_HEIGHT;
+
+      // C. Calculate the index in the 1D buffer (RGB565 = 2 bytes per pixel)
+      int pixel_idx = (y_cam * loop_fb->width + x_cam) * 2;
+
+      // Safety check to prevent crashing if index is out of bounds
+      if (pixel_idx + 1 >= loop_fb->len) {
+        out_ptr[i] = 0; 
+        continue;
+      }
+
+      // D. Read the pixel (RGB565 format)
+      uint8_t lo = loop_fb->buf[pixel_idx];
+      uint8_t hi = loop_fb->buf[pixel_idx + 1];
+      uint16_t pixel = (hi << 8) | lo;
+
+      // E. Convert RGB565 -> RGB888
+      float r = ((pixel >> 11) & 0x1F) * 255.0f / 31.0f;
+      float g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f;
+      float b = (pixel & 0x1F) * 255.0f / 31.0f;
+
+      // F. Convert to Grayscale (Luminance)
+      out_ptr[i] = (r * 0.299f) + (g * 0.587f) + (b * 0.114f);
   }
 
-  free(temp_resized_buf);
   return 0;
 }
 
@@ -202,27 +217,43 @@ void captureToResult() {
 
 // --- Lookup Table & Helpers ---
 const int heightsAt10mlSteps[] = {
-    160,  // 0ml
-    160,  // 10ml 
-    159,  // 20ml 
-    158, // 30ml 
-    157, // 40ml
-    156, // 50ml
-    153, // 60ml
-    153, // 70ml
-    150, // 80ml
-    148, // 90ml
-    145, // 100ml
-    144,  // 110ml 
-    141,  // 120ml 
-    139, // 130ml 
-    136, // 140ml
-    134, // 150ml
-    132, // 160ml
-    130, // 170ml
-    128, // 180ml
-    125, // 190ml
-    122, // 200ml
+    0,  // 0ml
+    1,  // 10ml 
+    2,  // 20ml 
+    3, // 30ml 
+    4, // 40ml
+    5, // 50ml
+    6, // 60ml
+    7, // 70ml
+    10, // 80ml
+    12, // 90ml
+    15, // 100ml
+    16,  // 110ml 
+    19,  // 120ml 
+    21, // 130ml 
+    24, // 140ml
+    26, // 150ml
+    28, // 160ml
+    30, // 170ml
+    32, // 180ml
+    35, // 190ml
+    38, // 200ml
+    41, // 210ml
+    44, // 220ml
+    40, // 230ml
+    42, // 240ml
+    44, // 250ml
+    46, // 260ml
+    44, // 270ml
+    42, // 280ml
+    40, // 290ml
+    37, // 300ml
+    34, // 310ml
+    32, // 320ml
+    30, // 330ml
+    28, // 340ml
+    26, // 350ml
+    24, // 360ml
 };
 
 // Calculate total array size automatically
