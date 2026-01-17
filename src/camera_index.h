@@ -13,15 +13,40 @@ static const char* index_ov5640_html = R"raw(
     button { width: 100%; padding: 15px; font-size: 18px; border: none; border-radius: 8px; cursor: pointer; color: white; margin-bottom: 10px; font-weight: bold; transition: opacity 0.2s; }
     button:active { opacity: 0.8; }
     .btn-empty { background-color: #3700b3; } 
-    /* .btn-start removed */
     .btn-end { background-color: #cf6679; color: #000; }
     .val { font-family: monospace; color: #fff; font-weight: bold; }
+    
+    /* Updated Image Grid Styles */
+    .img-grid { 
+        display: flex; 
+        flex-wrap: wrap; 
+        gap: 10px; 
+        justify-content: center; 
+        margin-top: 15px; 
+    }
+    .img-item { 
+        flex: 1; 
+        min-width: 100px; 
+        max-width: 320px; 
+        background: #000;
+        border-radius: 8px;
+        overflow: hidden;
+        border: 1px solid #444;
+    }
+    .img-item img { width: 100%; display: block; }
+    .img-caption { 
+        font-size: 0.75rem; 
+        padding: 5px; 
+        color: #aaa; 
+        background: #252525;
+        border-top: 1px solid #444;
+    }
+
     .status-badge { padding: 15px; border-radius: 8px; font-weight: bold; font-size: 1.5rem; margin-top: 15px; color: #000; }
     .status-under { background-color: #ffb74d; } 
     .status-good { background-color: #66bb6a; } 
     .status-over { background-color: #ef5350; }
-    img { width: 100%; border-radius: 8px; margin-top: 15px; border: 1px solid #444; }
-    
+
     .ai-box { margin-top: 15px; padding-top: 15px; border-top: 1px solid #333; }
     .ai-label { font-size: 1.6rem; font-weight: bold; color: #4fc3f7; }
     .ai-conf { font-size: 1rem; color: #888; margin-left: 5px; }
@@ -35,7 +60,7 @@ static const char* index_ov5640_html = R"raw(
   </style>
 </head>
 <body>
-  <div style="max-width:600px; margin:auto;">
+  <div style="max-width:800px; margin:auto;">
     <h2>Microfoam Monitor</h2>
     
     <div class="card">
@@ -53,7 +78,8 @@ static const char* index_ov5640_html = R"raw(
         <button class="btn-end" onclick="triggerAction('end')">3. Evaluate Froth</button>
         <div id="raw-end" style="color:#888;">Raw: --, --, --</div>
         <div>Avg: <span id="val-end" class="val">--</span></div>
-        <div id="img-container"></div>
+        
+        <div id="img-container" class="img-grid"></div>
     </div>
 
     <div id="res-box" class="card" style="display:none;">
@@ -87,14 +113,32 @@ static const char* index_ov5640_html = R"raw(
             document.getElementById('val-empty').innerText = data.empty + " mm";
             if(cmd == 'empty') document.getElementById('raw-empty').innerText = "Raw: " + data.raw.join(", ");
         }
-        // Removed the 'data.start' check since that button is gone
         
         if(data.end > 0) {
             document.getElementById('val-end').innerText = data.end + " mm";
             
             if(cmd == 'end') {
                 document.getElementById('raw-end').innerText = "Raw: " + data.raw.join(", ");
-                document.getElementById('img-container').innerHTML = `<img src="/capture?t=${Date.now()}">`;
+                
+                // --- INJECT 3 IMAGES ---
+                const ts = Date.now();
+                const html = `
+                    <div class="img-item">
+                        <img src="/capture_full?t=${ts}">
+                        <div class="img-caption">Full View (320x240)</div>
+                    </div>
+                    <div class="img-item">
+                        <img src="/capture_color?t=${ts}">
+                        <div class="img-caption">Cropped (Color)</div>
+                    </div>
+                    <div class="img-item">
+                        <img src="/capture?t=${ts}">
+                        <div class="img-caption">AI Input (Gray)</div>
+                    </div>
+                `;
+                document.getElementById('img-container').innerHTML = html;
+                // -----------------------
+
                 document.getElementById('res-box').style.display = "block";
                 
                 document.getElementById('res-pct').innerText = data.pct.toFixed(1) + "%";

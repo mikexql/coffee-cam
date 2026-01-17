@@ -96,7 +96,7 @@ namespace {
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX) || defined(EI_CLASSIFIER_ALLOCATION_STATIC_HIMAX_GNU)
 constexpr int kTensorArenaSize = 335440;
 #else
-constexpr int kTensorArenaSize = 724288;
+constexpr int kTensorArenaSize = 717500;
 #endif
 
 #if defined(EI_CLASSIFIER_ALLOCATION_STATIC)
