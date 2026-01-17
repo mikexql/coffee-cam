@@ -66,15 +66,15 @@ int raw_feature_get_data(size_t offset, size_t length, float *out_ptr) {
       // D. Read the pixel (RGB565 format)
       uint8_t lo = loop_fb->buf[pixel_idx];
       uint8_t hi = loop_fb->buf[pixel_idx + 1];
-      uint16_t pixel = (hi << 8) | lo;
+      uint16_t pixel = (lo << 8) | hi;
 
       // E. Convert RGB565 -> RGB888
-      float r = ((pixel >> 11) & 0x1F) * 255.0f / 31.0f;
-      float g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f;
-      float b = (pixel & 0x1F) * 255.0f / 31.0f;
+      float r = ((pixel & 0x1F) & 0x1F) * 255.0f / 31.0f; // comment out if only using green
+      float g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f; // change to float g = ((pixel >> 5) & 0x3F) if only using green
+      float b = (pixel >> 11) * 255.0f / 31.0f; // comment out if only using green
 
       // F. Convert to Grayscale (Luminance)
-      out_ptr[i] = (r * 0.299f) + (g * 0.587f) + (b * 0.114f);
+      out_ptr[i] = (r * 0.299f) + (g * 0.587f) + (b * 0.114f); // change to out_ptr[i] = g * 255.0f / 63.0f; if only using green
   }
 
   return 0;

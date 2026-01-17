@@ -143,12 +143,12 @@ static esp_err_t capture_color_handler(httpd_req_t *req) {
       // Read RGB565
       uint8_t lo = currentResult.fb->buf[src_idx];
       uint8_t hi = currentResult.fb->buf[src_idx + 1];
-      uint16_t pixel = (hi << 8) | lo;
+      uint16_t pixel = (lo << 8) | hi;
 
       // Convert RGB565 -> RGB888 (Color!)
-      rgb_buf[dst_idx] = ((pixel >> 11) & 0x1F) * 255 / 31;     // Red
+      rgb_buf[dst_idx] = ((pixel & 0x1F) & 0x1F) * 255 / 31;     // Red
       rgb_buf[dst_idx+1] = ((pixel >> 5) & 0x3F) * 255 / 63;    // Green
-      rgb_buf[dst_idx+2] = (pixel & 0x1F) * 255 / 31;           // Blue
+      rgb_buf[dst_idx+2] = (pixel >> 11) * 255 / 31;           // Blue
     }
   }
 
@@ -232,12 +232,12 @@ static esp_err_t capture_handler(httpd_req_t *req) {
       uint16_t pixel = (hi << 8) | lo;
 
       // D. Convert to Grayscale (Luminance)
-      float r = ((pixel >> 11) & 0x1F) * 255.0f / 31.0f;
-      float g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f;
-      float b = (pixel & 0x1F) * 255.0f / 31.0f;
+      float r = ((pixel >> 11) & 0x1F) * 255.0f / 31.0f; // comment out if only using green
+      float g = ((pixel >> 5) & 0x3F) * 255.0f / 63.0f; // change to float g = (pixel >> 5) & 0x3F; if only using green
+      float b = (pixel & 0x1F) * 255.0f / 31.0f; // comment out if only using green
       
       // Store as 8-bit integer (0-255)
-      gray_buf[y * AI_WIDTH + x] = (uint8_t)((r * 0.299f) + (g * 0.587f) + (b * 0.114f));
+      gray_buf[y * AI_WIDTH + x] = (uint8_t)((r * 0.299f) + (g * 0.587f) + (b * 0.114f)); // change to gray_buf[y * AI_WIDTH + x] = (uint8_t)(raw_green * 255.0f / 63.0f); if only using green
     }
   }
 
