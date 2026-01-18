@@ -275,6 +275,65 @@ static esp_err_t capture_handler(httpd_req_t *req) {
   return res;
 }
 
+// [Add this above startCameraServer]
+
+static esp_err_t download_handler(httpd_req_t *req) {
+    sensor_t *s = esp_camera_sensor_get();
+    
+    // 1. WAKE UP SENSOR (Replicating logic from your main file)
+    // If we don't do this, the image might be green/corrupted because you sleep the sensor
+    if (s) {
+        s->set_reg(s, 0x3008, 0xff, 0x02); // Wake up
+        vTaskDelay(200 / portTICK_PERIOD_MS); // Warm up
+    }
+
+    // 2. Capture Frame
+    camera_fb_t * fb = esp_camera_fb_get();
+    
+    // 3. IMMEDIATELY SLEEP SENSOR (To save power/heat)
+    if (s) {
+        s->set_reg(s, 0x3008, 0xff, 0x42); 
+    }
+
+    if (!fb) {
+        Serial.println("Camera capture failed");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // 4. Convert RGB565 to JPEG
+    uint8_t *jpg_buf = NULL;
+    size_t jpg_len = 0;
+
+    bool converted = fmt2jpg(
+        fb->buf, 
+        fb->len, 
+        fb->width, 
+        fb->height, 
+        PIXFORMAT_RGB565, 
+        80,          // High Quality for dataset
+        &jpg_buf,    
+        &jpg_len     
+    );
+
+    esp_camera_fb_return(fb); // Release raw buffer
+
+    if(!converted){
+        Serial.println("JPEG compression failed");
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    // 5. Send as "Attachment" (Forces Download)
+    httpd_resp_set_type(req, "image/jpeg");
+    httpd_resp_set_hdr(req, "Content-Disposition", "attachment; filename=capture.jpg");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    
+    esp_err_t res = httpd_resp_send(req, (const char *)jpg_buf, jpg_len);
+    free(jpg_buf);
+    return res;
+}
+
 void startCameraServer() {
   httpd_config_t config = HTTPD_DEFAULT_CONFIG();
   config.stack_size = 32768;
@@ -285,6 +344,7 @@ void startCameraServer() {
   httpd_uri_t capture_uri = { .uri = "/capture", .method = HTTP_GET, .handler = capture_handler, .user_ctx = NULL };
   httpd_uri_t color_uri = { .uri = "/capture_color", .method = HTTP_GET, .handler = capture_color_handler, .user_ctx = NULL };
   httpd_uri_t full_uri = { .uri = "/capture_full", .method = HTTP_GET, .handler = capture_full_handler, .user_ctx = NULL };
+  httpd_uri_t download_uri = { .uri = "/download", .method = HTTP_GET, .handler = download_handler, .user_ctx = NULL };
 
   if (httpd_start(&camera_httpd, &config) == ESP_OK) {
     httpd_register_uri_handler(camera_httpd, &index_uri);
@@ -292,5 +352,6 @@ void startCameraServer() {
     httpd_register_uri_handler(camera_httpd, &capture_uri);
     httpd_register_uri_handler(camera_httpd, &color_uri);
     httpd_register_uri_handler(camera_httpd, &full_uri);
+    httpd_register_uri_handler(camera_httpd, &download_uri);
   }
 }

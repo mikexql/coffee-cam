@@ -82,6 +82,13 @@ static const char* index_ov5640_html = R"raw(
         <div id="img-container" class="img-grid"></div>
     </div>
 
+    <div class="card">
+        <div style="margin-bottom:10px; font-weight:bold; color:#ccc;">Dataset Tools</div>
+        <button style="background-color: #00897b;" onclick="window.location.href='/download'">
+            Capture & Download JPEG
+        </button>
+    </div>
+
     <div id="res-box" class="card" style="display:none;">
         <h3>Expansion: <span id="res-pct">0%</span></h3>
         <div id="res-status" class="status-badge">--</div>
