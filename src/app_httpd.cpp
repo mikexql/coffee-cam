@@ -287,6 +287,15 @@ static esp_err_t download_handler(httpd_req_t *req) {
         vTaskDelay(200 / portTICK_PERIOD_MS); // Warm up
     }
 
+    // --- DISCARD FRAMES FOR AUTO-EXPOSURE ---
+    // The sensor needs 1-2 frames to adjust light levels after waking up.
+    // Without this, the image is black.
+    for (int i = 0; i < 2; i++) {
+        camera_fb_t * temp = esp_camera_fb_get();
+        if (temp) esp_camera_fb_return(temp);
+        vTaskDelay(50 / portTICK_PERIOD_MS);
+    }
+
     // 2. Capture Frame
     camera_fb_t * fb = esp_camera_fb_get();
     
