@@ -107,6 +107,7 @@ __attribute__((weak)) void *ei_malloc(size_t size) {
 #endif
     return malloc(size);
 }
+    
 
 __attribute__((weak)) void *ei_calloc(size_t nitems, size_t size) {
 #if defined(CONFIG_IDF_TARGET_ESP32S3)
