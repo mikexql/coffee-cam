@@ -25,14 +25,6 @@
 #define TOF_SDA 4
 #define TOF_SCL 5
 
-// OV5640 AF firmware interface registers
-static constexpr uint16_t REG_CHIP_ID_H = 0x300A;
-static constexpr uint16_t REG_CHIP_ID_L = 0x300B;
-
-static constexpr uint16_t REG_CMD_MAIN = 0x3022;  // main command
-static constexpr uint16_t REG_CMD_ACK = 0x3023;   // ack
-static constexpr uint16_t REG_FW_STATUS = 0x3029; // AF firmware status
-
 // Global instances
 OV5640 ov5640 = OV5640();
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
@@ -127,124 +119,13 @@ int getAveragedDistance(int readings[3])
   return (valid > 0) ? (int)(sum / valid) : 0; // return only if more than 1 valid reading to prevent division by 0
 }
 
-static inline bool is_focusing(uint8_t fw)
-{
-  // OV5640 AF guide: 0x00-0x0F and 0x80-0x8F are focusing
-  return (fw <= 0x0F) || (fw >= 0x80 && fw <= 0x8F);
-}
-
-static bool read_reg_u8(sensor_t *s, uint16_t reg, uint8_t &out)
-{
-  int v = s->get_reg(s, reg, 0xFF);
-  if (v < 0)
-    return false;
-  out = (uint8_t)v;
-  return true;
-}
-
-static bool ov5640_check_chip_id(sensor_t *s)
-{
-  uint8_t hi = 0, lo = 0;
-  if (!read_reg_u8(s, REG_CHIP_ID_H, hi))
-    return false;
-  if (!read_reg_u8(s, REG_CHIP_ID_L, lo))
-    return false;
-
-  // OV5640 is expected to be 0x56 0x40 (0x5640)
-  if (hi == 0xFF && lo == 0xFF)
-    return false; // typical read-fail pattern
-  return (hi == 0x56 && lo == 0x40);
-}
-
-bool ov5640_run_single_af(sensor_t *s, uint32_t timeout_ms = 5000)
-{
-  if (!s)
-    return false;
-
-  // 0) Quick SCCB sanity: if this fails, AF checks are meaningless
-  if (!ov5640_check_chip_id(s))
-  {
-    Serial.println("AF ERR: OV5640 chip ID read failed (SCCB not healthy).");
-    return false;
-  }
-
-  // 1) Trigger AF: write CMD_ACK=1 then CMD_MAIN=0x03 (Trig Auto Focus)
-  // Per OV5640 AF docs, CMD_ACK auto-clears to 0 when command completes.
-  if (s->set_reg(s, REG_CMD_ACK, 0xFF, 0x01) != 0)
-  {
-    Serial.println("AF ERR: write CMD_ACK failed");
-    return false;
-  }
-  if (s->set_reg(s, REG_CMD_MAIN, 0xFF, 0x03) != 0)
-  {
-    Serial.println("AF ERR: write CMD_MAIN failed");
-    return false;
-  }
-
-  // 2) Wait for CMD_ACK to clear to 0
-  uint32_t t0 = millis();
-  while (true)
-  {
-    uint8_t ack = 0xFF;
-    if (!read_reg_u8(s, REG_CMD_ACK, ack) || ack == 0xFF)
-    {
-      Serial.println("AF ERR: CMD_ACK read failed");
-      return false;
-    }
-    if (ack == 0x00)
-      break;
-
-    if (millis() - t0 > timeout_ms)
-    {
-      Serial.println("AF ERR: CMD_ACK timeout");
-      return false;
-    }
-    delay(10);
-  }
-
-  // 3) Poll FW_STATUS until focused (0x10) or timeout
-  // Docs: 0x10 = focused, focusing states are 0x00-0x0F,0x80-0x8F, idle is 0x70
-  while (true)
-  {
-    uint8_t fw = 0xFF;
-    if (!read_reg_u8(s, REG_FW_STATUS, fw) || fw == 0xFF)
-    {
-      Serial.println("AF ERR: FW_STATUS read failed");
-      return false;
-    }
-
-    if (fw == 0x10)
-    { // S_FOCUSED
-      Serial.println("AF OK: focused (FW_STATUS=0x10)");
-      return true;
-    }
-
-    // Optional: treat "firmware not ready" as hard fail
-    if (fw == 0x7F || fw == 0x7E)
-    {
-      Serial.printf("AF ERR: firmware not ready (FW_STATUS=0x%02X)\n", fw);
-      return false;
-    }
-
-    if (millis() - t0 > timeout_ms)
-    {
-      Serial.printf("AF ERR: focus timeout (FW_STATUS=0x%02X)\n", fw);
-      return false;
-    }
-    delay(20);
-  }
-}
-
 // --- Camera Module ---
 void captureToResult()
 {
-  Serial.println("Starting Camera Capture with Autofocus...");
   sensor_t *s = esp_camera_sensor_get();
-  Serial.println("Sensor obtained.");
 
   // WAKE UP
   s->set_reg(s, 0x3008, 0xff, 0x02);
-  Serial.println("Sensor waking up...");
   vTaskDelay(300 / portTICK_PERIOD_MS);
   Serial.println("Sensor turned on");
 
@@ -252,30 +133,37 @@ void captureToResult()
   Serial.println("Starting Autofocus...");
   s->set_reg(s, 0x3023, 0xff, 0x01); // Handshake ACK
   s->set_reg(s, 0x3022, 0xff, 0x03); // Single Focus Command
-  bool ok = ov5640_run_single_af(s, 5000);
-  Serial.printf("AF %s\n", ok ? "SUCCESS" : "FAILED");
 
-  // 2. Wait for focus to finish
-  uint8_t status = 0x10; // Register 0x3029 is 0x10 while the motor is moving
+  // 2. Wait for completion
+  // Datasheet: 0x00 = Focusing, 0x10 = Focused, 0x70 = Idle/Fail
+  uint8_t status = 0x00;
   unsigned long startTime = millis();
-
-  while (status == 0x10)
-  {
-    status = s->get_reg(s, 0x3029, 0xff); // get all 8 bits of register data (0xff = all 8 bits)
-    Serial.printf("Focusing... Status: 0x%02X\n", status);
-
-    if (millis() - startTime > 5000)
-    { // 5 second timeout
-      Serial.println("Focus Timeout!");
-      break;
+  
+  while (true) {
+    status = s->get_reg(s, 0x3029, 0xff);
+    
+    if (status == 0x10) {
+        break; // Done!
+    }
+    if (status == 0x70) {
+        Serial.println("AF Idle/Fail");
+        break; // Stop waiting
+    }
+    // Also stop if we see 0xFF (I2C Error)
+    if (status == 0xFF) {
+       Serial.println("AF Error (I2C Fail)"); 
+       break;
     }
 
+    if (millis() - startTime > 4000) { 
+      Serial.println("AF Timeout!");
+      break;
+    }
     delay(100);
   }
-
-  Serial.printf("Focus Complete. Status: 0x%02X\n", status);
-
-  delay(500);
+  
+  Serial.printf("Final AF Status: 0x%02X\n", status);
+  delay(200); // Mechanical settling time
 
   // clear buffer: if there is a picture in buffer, return frame buffer to be reused again
   if (currentResult.fb)
@@ -284,17 +172,14 @@ void captureToResult()
     currentResult.fb = NULL;
   }
 
-  // at the current focal length, flush buffer by taking 3 pictures to get rid of out of focus pictures
-  for (int i = 0; i < 4; i++)
-  {
-    camera_fb_t *temp_fb = esp_camera_fb_get();
-
-    if (temp_fb)
-    {
-      esp_camera_fb_return(temp_fb);
-    }
-
-    vTaskDelay(150 / portTICK_PERIOD_MS); // Small gap for stability
+  // --- DISCARD FRAME FOR AUTO-EXPOSURE ---
+  // The sensor needs to adjust light levels after waking up.
+  // Without this, the image is black.
+  //3 flush to prevent rainbow
+  for (int i = 0; i < 3; i++) {
+    camera_fb_t * temp = esp_camera_fb_get();
+    if (temp) esp_camera_fb_return(temp);
+    vTaskDelay(150 / portTICK_PERIOD_MS);
   }
 
   // 3. Capture photo and store it in the Shared Result Object

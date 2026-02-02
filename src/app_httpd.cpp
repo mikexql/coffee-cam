@@ -281,7 +281,6 @@ static esp_err_t download_handler(httpd_req_t *req) {
     if (currentResult.fb) {
       esp_camera_fb_return(currentResult.fb);
       currentResult.fb = NULL;
-      Serial.println("Released locked buffer from Evaluate Froth");
     }
 
     sensor_t *s = esp_camera_sensor_get();
@@ -294,28 +293,43 @@ static esp_err_t download_handler(httpd_req_t *req) {
     }
 
     if (s) {
-        Serial.println("Web: Starting Autofocus...");
         s->set_reg(s, 0x3023, 0xff, 0x01); // Trigger AF
         s->set_reg(s, 0x3022, 0xff, 0x03); 
 
         // Wait for focus (Simple timeout loop)
-        uint8_t status = 0x10;
+        uint8_t status = 0x00;
         unsigned long startTime = millis();
-        while (status == 0x10) {
+
+        while (status != 0x10) {
             status = s->get_reg(s, 0x3029, 0xff);
-            if (millis() - startTime > 5000) break; // 5s Timeout
+            
+            if (status == 0x70) {
+                Serial.println("AF Idle/Fail (0x70)");
+                break;
+            }
+            // Check for I2C Error (Bus conflict)
+            if (status == 0xFF) {
+                Serial.println("AF I2C Error (0xFF)");
+                break;
+            }
+            // Timeout after 4 seconds
+            if (millis() - startTime > 4000) {
+                Serial.println("AF Timeout!");
+                break; 
+            }
             delay(100);
         }
-        vTaskDelay(500 / portTICK_PERIOD_MS); // Stabilization delay
+        //vTaskDelay(500 / portTICK_PERIOD_MS); // Stabilization delay
     }
 
-    // --- DISCARD FRAMES FOR AUTO-EXPOSURE ---
-    // The sensor needs 1-2 frames to adjust light levels after waking up.
+    // --- DISCARD FRAME FOR AUTO-EXPOSURE ---
+    // The sensor needs to adjust light levels after waking up.
     // Without this, the image is black.
-    for (int i = 0; i < 4; i++) {
-        camera_fb_t * temp = esp_camera_fb_get();
-        if (temp) esp_camera_fb_return(temp);
-        vTaskDelay(150 / portTICK_PERIOD_MS);
+    //3 flush to prevent rainbow
+    for (int i = 0; i < 3; i++) {
+      camera_fb_t * temp = esp_camera_fb_get();
+      if (temp) esp_camera_fb_return(temp);
+      vTaskDelay(150 / portTICK_PERIOD_MS);
     }
 
     // 2. Capture Frame
