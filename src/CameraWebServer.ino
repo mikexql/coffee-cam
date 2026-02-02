@@ -18,8 +18,12 @@
 #include "edge-impulse-sdk/porting/ei_classifier_porting.h"
 
 // Define I2C Pins for ToF
-#define TOF_SDA 14
-#define TOF_SCL 3
+//#define TOF_SDA 14
+//#define TOF_SCL 3
+
+// Define I2C Pins for shared i2c
+#define TOF_SDA 4
+#define TOF_SCL 5
 
 // Global instances
 OV5640 ov5640 = OV5640();
@@ -101,7 +105,7 @@ int getAveragedDistance(int readings[3]) {
       readings[i] = -1; //mark reading as invalid
     }
 
-    delay(100);
+    delay(10);
   }
 
   return (valid > 0) ? (int)(sum / valid) : 0; //return only if more than 1 valid reading to prevent division by 0
@@ -340,17 +344,6 @@ void setup() {
   esp_log_level_set("camera", ESP_LOG_NONE); 
   esp_log_level_set("cam_hal", ESP_LOG_NONE);
 
-  Serial.println("Initializing VL53L0X Sensor...");
-  Wire.setPins(TOF_SDA, TOF_SCL); //use setPins first and call later
-
-  if (!lox.begin()) {
-    Serial.println("ToF Failed");
-  }
-
-  else {
-    Serial.println(F("VL53L0X Ready!"));
-  }
-
   camera_config_t config;
   config.ledc_channel = LEDC_CHANNEL_0;
   config.ledc_timer = LEDC_TIMER_0;
@@ -368,6 +361,8 @@ void setup() {
   config.pin_href = HREF_GPIO_NUM;
   config.pin_sccb_sda = SIOD_GPIO_NUM;
   config.pin_sccb_scl = SIOC_GPIO_NUM;
+  // CRITICAL: Force Hardware I2C (Port 0)
+  config.sccb_i2c_port = 0;
   config.pin_pwdn = PWDN_GPIO_NUM;
   config.pin_reset = RESET_GPIO_NUM;
   config.xclk_freq_hz = 24000000;
@@ -385,6 +380,21 @@ void setup() {
   if (err != ESP_OK) {
     Serial.printf("Camera init failed with error 0x%x", err);
     return;
+  }
+
+  // --- 2. CONFIGURE TOF SENSOR (Secondary Device) ---
+  Serial.println("Initializing VL53L0X Sensor...");
+  
+  // Join the I2C Bus that the camera just started
+  Wire.begin(TOF_SDA, TOF_SCL);
+  
+  // SPEED LIMIT: Force 100kHz so we don't crash the Camera
+  Wire.setClock(400000); 
+
+  if (!lox.begin()) {
+    Serial.println("ToF Failed");
+  } else {
+    Serial.println(F("VL53L0X Ready!"));
   }
 
   //s is pointer to camera sensor
