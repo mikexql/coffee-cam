@@ -147,7 +147,7 @@ void captureToResult() {
   }
 
   //at the current focal length, flush buffer by taking 3 pictures to get rid of out of focus pictures
-  for (int i = 0; i < 3; i++) {
+  for (int i = 0; i < 4; i++) {
     camera_fb_t * temp_fb = esp_camera_fb_get();
 
     if(temp_fb) {

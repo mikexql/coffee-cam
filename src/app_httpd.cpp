@@ -278,22 +278,44 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 // [Add this above startCameraServer]
 
 static esp_err_t download_handler(httpd_req_t *req) {
+    if (currentResult.fb) {
+      esp_camera_fb_return(currentResult.fb);
+      currentResult.fb = NULL;
+      Serial.println("Released locked buffer from Evaluate Froth");
+    }
+
     sensor_t *s = esp_camera_sensor_get();
     
     // 1. WAKE UP SENSOR (Replicating logic from your main file)
     // If we don't do this, the image might be green/corrupted because you sleep the sensor
     if (s) {
         s->set_reg(s, 0x3008, 0xff, 0x02); // Wake up
-        vTaskDelay(200 / portTICK_PERIOD_MS); // Warm up
+        vTaskDelay(300 / portTICK_PERIOD_MS); // Warm up
+    }
+
+    if (s) {
+        Serial.println("Web: Starting Autofocus...");
+        s->set_reg(s, 0x3023, 0xff, 0x01); // Trigger AF
+        s->set_reg(s, 0x3022, 0xff, 0x03); 
+
+        // Wait for focus (Simple timeout loop)
+        uint8_t status = 0x10;
+        unsigned long startTime = millis();
+        while (status == 0x10) {
+            status = s->get_reg(s, 0x3029, 0xff);
+            if (millis() - startTime > 5000) break; // 5s Timeout
+            delay(100);
+        }
+        vTaskDelay(500 / portTICK_PERIOD_MS); // Stabilization delay
     }
 
     // --- DISCARD FRAMES FOR AUTO-EXPOSURE ---
     // The sensor needs 1-2 frames to adjust light levels after waking up.
     // Without this, the image is black.
-    for (int i = 0; i < 2; i++) {
+    for (int i = 0; i < 4; i++) {
         camera_fb_t * temp = esp_camera_fb_get();
         if (temp) esp_camera_fb_return(temp);
-        vTaskDelay(50 / portTICK_PERIOD_MS);
+        vTaskDelay(150 / portTICK_PERIOD_MS);
     }
 
     // 2. Capture Frame
