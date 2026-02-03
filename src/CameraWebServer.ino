@@ -3,8 +3,10 @@
 #include "secrets.h"
 #include "ESP32_OV5640_AF.h"
 #include "Adafruit_VL53L0X.h"
+#include <Adafruit_NeoPixel.h>
 #include "board_config.h"
 #include "microfoam_logic.h"
+#include <BH1750.h>
 
 #include <milk_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
@@ -17,23 +19,77 @@
 #include <stdarg.h>
 #include "edge-impulse-sdk/porting/ei_classifier_porting.h"
 
-// Define I2C Pins for ToF
-// #define TOF_SDA 14
-// #define TOF_SCL 3
-
 // Define I2C Pins for shared i2c
 #define TOF_SDA 4
 #define TOF_SCL 5
 
+// Pick the GPIO your ringlight data line uses (change to your wiring)
+#define RING_PIN 14
+#define RING_COUNT 16
+#define RING_BRIGHTNESS 80
+
 // Global instances
 OV5640 ov5640 = OV5640();
+BH1750 luxMeter;
 Adafruit_VL53L0X lox = Adafruit_VL53L0X();
+Adafruit_NeoPixel ring(RING_COUNT, RING_PIN, NEO_GRB + NEO_KHZ800);
 
 // Initialize all fields of microfoam_logic
 MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
 
 // Global helper for AI buffer
 static camera_fb_t *loop_fb = NULL;
+
+float readLux()
+{
+  float lux = luxMeter.readLightLevel();
+  Serial.printf("Lux: %.2f\n", lux);
+  return lux;
+}
+
+void ringlightOn(uint8_t r = 255, uint8_t g = 255, uint8_t b = 255)
+{
+  Serial.printf("Ring ON r=%u g=%u b=%u\n", r, g, b);
+  ring.setBrightness(RING_BRIGHTNESS);
+  for (int i = 0; i < RING_COUNT; i++)
+  {
+    ring.setPixelColor(i, ring.Color(r, g, b));
+  }
+  ring.show();
+  Serial.println("Ring show done");
+  delay(1000);
+}
+
+void ringlightOff()
+{
+  Serial.println("Ring OFF");
+  ring.clear();
+  ring.show();
+}
+
+void ringlightDebugTest()
+{
+  Serial.printf("Ring init: pin=%d count=%d brightness=%d\n", RING_PIN, RING_COUNT, RING_BRIGHTNESS);
+  ring.setBrightness(RING_BRIGHTNESS);
+  ring.clear();
+  ring.show();
+  Serial.println("Ring cleared");
+
+  ring.setPixelColor(0, ring.Color(255, 0, 0));
+  ring.show();
+  Serial.println("Ring pixel 0 set to red");
+}
+
+void luxTest()
+{
+  Serial.println("Starting Lux Test...");
+  for (int i = 0; i < 5; i++)
+  {
+    readLux();
+    delay(500);
+  }
+  Serial.println("Lux Test done.");
+}
 
 void startCameraServer(); // refer to app_httpd
 
@@ -122,6 +178,7 @@ int getAveragedDistance(int readings[3])
 // --- Camera Module ---
 void captureToResult()
 {
+  ringlightOn(255, 0, 255);
   sensor_t *s = esp_camera_sensor_get();
 
   // WAKE UP
@@ -138,30 +195,36 @@ void captureToResult()
   // Datasheet: 0x00 = Focusing, 0x10 = Focused, 0x70 = Idle/Fail
   uint8_t status = 0x00;
   unsigned long startTime = millis();
-  
-  while (true) {
+
+  while (true)
+  {
     status = s->get_reg(s, 0x3029, 0xff);
-    
-    if (status == 0x10) {
-        break; // Done!
+
+    if (status == 0x10)
+    {
+      break; // Done!
     }
-    if (status == 0x70) {
-        Serial.println("AF Idle/Fail");
-        break; // Stop waiting
+    if (status == 0x70)
+    {
+      Serial.println("AF Idle/Fail");
+      break; // Stop waiting
     }
     // Also stop if we see 0xFF (I2C Error)
-    if (status == 0xFF) {
-       Serial.println("AF Error (I2C Fail)"); 
-       break;
+    if (status == 0xFF)
+    {
+      Serial.println("AF Error (I2C Fail)");
+      break;
     }
 
-    if (millis() - startTime > 4000) { 
+    if (millis() - startTime > 4000)
+    {
       Serial.println("AF Timeout!");
       break;
     }
     delay(100);
+    ringlightOff();
   }
-  
+
   Serial.printf("Final AF Status: 0x%02X\n", status);
   delay(200); // Mechanical settling time
 
@@ -175,10 +238,12 @@ void captureToResult()
   // --- DISCARD FRAME FOR AUTO-EXPOSURE ---
   // The sensor needs to adjust light levels after waking up.
   // Without this, the image is black.
-  //3 flush to prevent rainbow
-  for (int i = 0; i < 3; i++) {
-    camera_fb_t * temp = esp_camera_fb_get();
-    if (temp) esp_camera_fb_return(temp);
+  // 3 flush to prevent rainbow
+  for (int i = 0; i < 3; i++)
+  {
+    camera_fb_t *temp = esp_camera_fb_get();
+    if (temp)
+      esp_camera_fb_return(temp);
     vTaskDelay(150 / portTICK_PERIOD_MS);
   }
 
@@ -445,6 +510,17 @@ void setup()
     Serial.println(F("VL53L0X Ready!"));
   }
 
+  // BH1750 init on same I2C bus
+  if (!luxMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE))
+  {
+    Serial.println("BH1750 init failed");
+  }
+  else
+  {
+    Serial.println("BH1750 ready");
+    luxTest();
+  }
+
   // s is pointer to camera sensor
   sensor_t *s = esp_camera_sensor_get();
 
@@ -471,6 +547,12 @@ void setup()
       Serial.println("Sensor in Sleep Mode. Ready.");
     }
   }
+
+  ring.begin();
+  ring.show();
+  Serial.println("Ring begin+show done");
+
+  ringlightDebugTest();
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false); // Wifi active 100% of the time
