@@ -2,11 +2,11 @@
 #include <WiFi.h>
 #include "secrets.h"
 #include "ESP32_OV5640_AF.h"
-#include "Adafruit_VL53L0X.h"
-#include <Adafruit_NeoPixel.h>
 #include "board_config.h"
 #include "microfoam_logic.h"
-#include <BH1750.h>
+#include "ring_light.h"
+#include "lux_sensor.h"
+#include "tof_sensor.h"
 
 #include <milk_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
@@ -25,14 +25,14 @@
 
 // Pick the GPIO your ringlight data line uses (change to your wiring)
 #define RING_PIN 14
-#define RING_COUNT 16
-#define RING_BRIGHTNESS 80
+#define RING_COUNT 12
+#define RING_BRIGHTNESS 155
 
 // Global instances
 OV5640 ov5640 = OV5640();
-BH1750 luxMeter;
-Adafruit_VL53L0X lox = Adafruit_VL53L0X();
-Adafruit_NeoPixel ring(RING_COUNT, RING_PIN, NEO_GRB + NEO_KHZ800);
+LuxSensor luxSensor("LuxSensor", BH1750::CONTINUOUS_HIGH_RES_MODE, 1.0f, 3);
+TofSensor tofSensor("ToF", false, 200, 3);
+RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
 
 // Initialize all fields of microfoam_logic
 MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
@@ -40,55 +40,46 @@ MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "-
 // Global helper for AI buffer
 static camera_fb_t *loop_fb = NULL;
 
-float readLux()
-{
-  float lux = luxMeter.readLightLevel();
-  Serial.printf("Lux: %.2f\n", lux);
-  return lux;
-}
+static uint8_t brightness = 80;    // start somewhere reasonable (0..255)
+static const float Kp = 1.0f;      // tune: brightness steps per lux error
+static const int LUX_DEADBAND = 5; // +- lux tolerance
 
-void ringlightOn(uint8_t r = 255, uint8_t g = 255, uint8_t b = 255)
+void setLux(int target_lux)
 {
-  Serial.printf("Ring ON r=%u g=%u b=%u\n", r, g, b);
-  ring.setBrightness(RING_BRIGHTNESS);
-  for (int i = 0; i < RING_COUNT; i++)
-  {
-    ring.setPixelColor(i, ring.Color(r, g, b));
+  Serial.printf("Setting target lux: %d\n", target_lux);
+  float current_lux = luxSensor.readOnce().value;
+  Serial.printf("Current lux: %.2f\n", current_lux);
+  // Simple feedback loop (not very efficient, but works for demo)
+  int attempts = 0;
+  ringLight.setBrightness(RING_BRIGHTNESS);
+  ringLight.on();
+  while (attempts < 50)
+  { // allow more iterations; keep each iteration fast
+    float err = (float)target_lux - current_lux;
+
+    if (fabs(err) <= LUX_DEADBAND)
+      break;
+
+    // Proportional update
+    int delta = (int)roundf(Kp * err);
+
+    // Prevent huge jumps
+    delta = constrain(delta, -30, 30);
+
+    int new_brightness = (int)brightness + delta;
+    brightness = (uint8_t)constrain(new_brightness, 0, 255);
+
+    // IMPORTANT for NeoPixel-style libs:
+    // re-apply base colors (un-dimmed), then setBrightness, then show.
+    ringLight.setBrightness(brightness);
+
+    delay(200); // keep short; sensor itself is usually the bottleneck
+    current_lux = luxSensor.readOnce().value;
+    Serial.printf("lux=%.2f err=%.2f bright=%u\n", current_lux, err, brightness);
+
+    attempts++;
   }
-  ring.show();
-  Serial.println("Ring show done");
-  delay(1000);
-}
-
-void ringlightOff()
-{
-  Serial.println("Ring OFF");
-  ring.clear();
-  ring.show();
-}
-
-void ringlightDebugTest()
-{
-  Serial.printf("Ring init: pin=%d count=%d brightness=%d\n", RING_PIN, RING_COUNT, RING_BRIGHTNESS);
-  ring.setBrightness(RING_BRIGHTNESS);
-  ring.clear();
-  ring.show();
-  Serial.println("Ring cleared");
-
-  ring.setPixelColor(0, ring.Color(255, 0, 0));
-  ring.show();
-  Serial.println("Ring pixel 0 set to red");
-}
-
-void luxTest()
-{
-  Serial.println("Starting Lux Test...");
-  for (int i = 0; i < 5; i++)
-  {
-    readLux();
-    delay(500);
-  }
-  Serial.println("Lux Test done.");
+  Serial.println("Target lux adjustment done.");
 }
 
 void startCameraServer(); // refer to app_httpd
@@ -144,41 +135,10 @@ int raw_feature_get_data(size_t offset, size_t length, float *out_ptr)
   return 0;
 }
 
-// --- Measurement Module ---
-int getAveragedDistance(int readings[3])
-{
-  long sum = 0;
-  int valid = 0;
-
-  // take 3 readings to get average
-  for (int i = 0; i < 3; i++)
-  {
-    VL53L0X_RangingMeasurementData_t measure;
-    lox.rangingTest(&measure, false); // triggers ToF laser
-
-    // status 4 means out of range
-    if (measure.RangeStatus != 4)
-    {
-      readings[i] = measure.RangeMilliMeter;
-      sum += readings[i];
-      valid++;
-    }
-
-    else
-    {
-      readings[i] = -1; // mark reading as invalid
-    }
-
-    delay(10);
-  }
-
-  return (valid > 0) ? (int)(sum / valid) : 0; // return only if more than 1 valid reading to prevent division by 0
-}
-
 // --- Camera Module ---
 void captureToResult()
 {
-  ringlightOn(255, 0, 255);
+  setLux(100);
   sensor_t *s = esp_camera_sensor_get();
 
   // WAKE UP
@@ -221,8 +181,6 @@ void captureToResult()
       Serial.println("AF Timeout!");
       break;
     }
-    delay(100);
-    ringlightOff();
   }
 
   Serial.printf("Final AF Status: 0x%02X\n", status);
@@ -256,11 +214,13 @@ void captureToResult()
     Serial.println("Camera capture failed");
     s->set_reg(s, 0x3008, 0xff, 0x42);
     Serial.println("Sensor in Sleep Mode.");
+    ringLight.off();
     return;
   }
 
   Serial.printf("Success! Photo size: %zu bytes\n", currentResult.fb->len);
   s->set_reg(s, 0x3008, 0xff, 0x42);
+  ringLight.off();
   delay(500);
 
   // --- START AI INFERENCE ---
@@ -397,7 +357,8 @@ void performAction(String cmd)
     return;
   }
 
-  int avg = getAveragedDistance(currentResult.raw);
+  int avg = tofSensor.read().value; // Use ToF Sensor
+  Serial.printf("ToF Average Distance: %d mm\n", avg);
   currentResult.avg = avg;
 
   if (cmd == "empty")
@@ -501,24 +462,16 @@ void setup()
   // --- 2. CONFIGURE TOF SENSOR (Secondary Device) ---
   Serial.println("Initializing VL53L0X Sensor...");
 
-  if (!lox.begin())
+  Serial.println("Initializing ToF Sensor...");
+  if (!tofSensor.initialize())
   {
     Serial.println("ToF Failed");
   }
-  else
-  {
-    Serial.println(F("VL53L0X Ready!"));
-  }
 
-  // BH1750 init on same I2C bus
-  if (!luxMeter.begin(BH1750::CONTINUOUS_HIGH_RES_MODE))
+  Serial.println("Initializing BH1750 Lux Sensor...");
+  if (!luxSensor.initialize())
   {
-    Serial.println("BH1750 init failed");
-  }
-  else
-  {
-    Serial.println("BH1750 ready");
-    luxTest();
+    Serial.println("Lux sensor init failed");
   }
 
   // s is pointer to camera sensor
@@ -548,11 +501,8 @@ void setup()
     }
   }
 
-  ring.begin();
-  ring.show();
-  Serial.println("Ring begin+show done");
-
-  ringlightDebugTest();
+  ringLight.initialize();
+  ringLight.setBrightness(RING_BRIGHTNESS);
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false); // Wifi active 100% of the time
