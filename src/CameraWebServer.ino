@@ -1,12 +1,12 @@
 #include "esp_camera.h"
 #include <WiFi.h>
 #include "secrets.h"
-#include "ESP32_OV5640_AF.h"
 #include "board_config.h"
 #include "microfoam_logic.h"
 #include "ring_light.h"
 #include "lux_sensor.h"
 #include "tof_sensor.h"
+#include "camera_module.h"
 
 #include <milk_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
@@ -29,7 +29,7 @@
 #define RING_BRIGHTNESS 155
 
 // Global instances
-OV5640 ov5640 = OV5640();
+Camera camera("Camera", true, true);
 LuxSensor luxSensor("LuxSensor", BH1750::CONTINUOUS_HIGH_RES_MODE, 1.0f, 3);
 TofSensor tofSensor("ToF", false, 200, 3);
 RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
@@ -40,46 +40,118 @@ MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "-
 // Global helper for AI buffer
 static camera_fb_t *loop_fb = NULL;
 
-static uint8_t brightness = 80;    // start somewhere reasonable (0..255)
-static const float Kp = 1.0f;      // tune: brightness steps per lux error
-static const int LUX_DEADBAND = 5; // +- lux tolerance
+// Tunables
+const int LUX_DEADBAND = 8; // your suggested deadband
+const int MAX_STEPS = 16;   // safety limit for binary search
+const int RAMP_STEP = 32;   // coarse brightness step for ramp
+const int SETTLE_MS = 150;  // time for sensor & light to stabilise
 
 void setLux(int target_lux)
 {
   Serial.printf("Setting target lux: %d\n", target_lux);
-  float current_lux = luxSensor.readOnce().value;
-  Serial.printf("Current lux: %.2f\n", current_lux);
-  // Simple feedback loop (not very efficient, but works for demo)
-  int attempts = 0;
-  ringLight.setBrightness(RING_BRIGHTNESS);
+
+  // --- Phase 0: start from dark ---
+  uint8_t brightness = 0;
+  ringLight.setBrightness(brightness);
   ringLight.on();
-  while (attempts < 50)
-  { // allow more iterations; keep each iteration fast
-    float err = (float)target_lux - current_lux;
+  delay(SETTLE_MS);
 
-    if (fabs(err) <= LUX_DEADBAND)
-      break;
+  float lux = luxSensor.read().value;
+  Serial.printf("Initial lux: %.2f (bright=%u)\n", lux, brightness);
 
-    // Proportional update
-    int delta = (int)roundf(Kp * err);
-
-    // Prevent huge jumps
-    delta = constrain(delta, -30, 30);
-
-    int new_brightness = (int)brightness + delta;
-    brightness = (uint8_t)constrain(new_brightness, 0, 255);
-
-    // IMPORTANT for NeoPixel-style libs:
-    // re-apply base colors (un-dimmed), then setBrightness, then show.
-    ringLight.setBrightness(brightness);
-
-    delay(200); // keep short; sensor itself is usually the bottleneck
-    current_lux = luxSensor.readOnce().value;
-    Serial.printf("lux=%.2f err=%.2f bright=%u\n", current_lux, err, brightness);
-
-    attempts++;
+  // Edge case: already bright enough from ambient
+  if (lux >= target_lux - LUX_DEADBAND)
+  {
+    Serial.println("Ambient light already within target range, no adjustment needed.");
+    return;
   }
-  Serial.println("Target lux adjustment done.");
+
+  // --- Phase 1: ramp up until we cross the target or hit max brightness ---
+  uint8_t lowB = brightness; // brightness known to be too dark
+  float lowLux = lux;
+
+  uint8_t highB = 255; // will be updated once we cross
+  float highLux = lux;
+
+  while (lux < target_lux - LUX_DEADBAND && brightness < 255)
+  {
+    // coarse step up
+    brightness = (uint8_t)min<int>(brightness + RAMP_STEP, 255);
+    ringLight.setBrightness(brightness);
+    delay(SETTLE_MS);
+    lux = luxSensor.read().value;
+
+    Serial.printf("[RAMP] bright=%u, lux=%.2f\n", brightness, lux);
+
+    if (lux < target_lux - LUX_DEADBAND)
+    {
+      lowB = brightness;
+      lowLux = lux;
+    }
+    else
+    {
+      highB = brightness;
+      highLux = lux;
+      break; // we crossed the target
+    }
+  }
+
+  // If even at max brightness we never reached target_lux, just keep max
+  if (brightness == 255 && lux < target_lux - LUX_DEADBAND)
+  {
+    Serial.println("Warning: cannot reach target lux even at max brightness.");
+    return;
+  }
+
+  // --- Phase 2: binary search between lowB and highB ---
+  for (int step = 0; step < MAX_STEPS; step++)
+  {
+    // If already good enough, stop
+    float err = target_lux - lux;
+    if (fabs(err) <= LUX_DEADBAND)
+    {
+      Serial.printf("Converged: lux=%.2f within deadband ±%d (bright=%u)\n",
+                    lux, LUX_DEADBAND, brightness);
+      break;
+    }
+
+    // Classic binary search on brightness
+    uint8_t midB = (uint8_t)((lowB + highB) / 2);
+    ringLight.setBrightness(midB);
+    delay(SETTLE_MS);
+    float midLux = luxSensor.read().value;
+
+    Serial.printf("[BIN] low=(%u, %.2f) mid=(%u, %.2f) high=(%u, %.2f)\n",
+                  lowB, lowLux, midB, midLux, highB, highLux);
+
+    // Decide which side the target is on
+    if (midLux < target_lux - LUX_DEADBAND)
+    {
+      // still too dark → move low up
+      lowB = midB;
+      lowLux = midLux;
+    }
+    else if (midLux > target_lux + LUX_DEADBAND)
+    {
+      // too bright → move high down
+      highB = midB;
+      highLux = midLux;
+    }
+    else
+    {
+      // inside deadband → good enough
+      brightness = midB;
+      lux = midLux;
+      Serial.printf("Binary search landed inside deadband: lux=%.2f, bright=%u\n",
+                    lux, brightness);
+      break;
+    }
+
+    brightness = midB;
+    lux = midLux;
+  }
+
+  Serial.printf("Final lux: %.2f at brightness=%u\n", lux, brightness);
 }
 
 void startCameraServer(); // refer to app_httpd
@@ -138,88 +210,24 @@ int raw_feature_get_data(size_t offset, size_t length, float *out_ptr)
 // --- Camera Module ---
 void captureToResult()
 {
-  setLux(100);
-  sensor_t *s = esp_camera_sensor_get();
-
-  // WAKE UP
-  s->set_reg(s, 0x3008, 0xff, 0x02);
-  vTaskDelay(300 / portTICK_PERIOD_MS);
-  Serial.println("Sensor turned on");
-
-  // 1. Trigger Single Focus Search
-  Serial.println("Starting Autofocus...");
-  s->set_reg(s, 0x3023, 0xff, 0x01); // Handshake ACK
-  s->set_reg(s, 0x3022, 0xff, 0x03); // Single Focus Command
-
-  // 2. Wait for completion
-  // Datasheet: 0x00 = Focusing, 0x10 = Focused, 0x70 = Idle/Fail
-  uint8_t status = 0x00;
-  unsigned long startTime = millis();
-
-  while (true)
-  {
-    status = s->get_reg(s, 0x3029, 0xff);
-
-    if (status == 0x10)
-    {
-      break; // Done!
-    }
-    if (status == 0x70)
-    {
-      Serial.println("AF Idle/Fail");
-      break; // Stop waiting
-    }
-    // Also stop if we see 0xFF (I2C Error)
-    if (status == 0xFF)
-    {
-      Serial.println("AF Error (I2C Fail)");
-      break;
-    }
-
-    if (millis() - startTime > 4000)
-    {
-      Serial.println("AF Timeout!");
-      break;
-    }
-  }
-
-  Serial.printf("Final AF Status: 0x%02X\n", status);
-  delay(200); // Mechanical settling time
-
-  // clear buffer: if there is a picture in buffer, return frame buffer to be reused again
+  setLux(100); // target lux for consistent lighting
   if (currentResult.fb)
   {
     esp_camera_fb_return(currentResult.fb);
     currentResult.fb = NULL;
   }
 
-  // --- DISCARD FRAME FOR AUTO-EXPOSURE ---
-  // The sensor needs to adjust light levels after waking up.
-  // Without this, the image is black.
-  // 3 flush to prevent rainbow
-  for (int i = 0; i < 3; i++)
-  {
-    camera_fb_t *temp = esp_camera_fb_get();
-    if (temp)
-      esp_camera_fb_return(temp);
-    vTaskDelay(150 / portTICK_PERIOD_MS);
-  }
-
-  // 3. Capture photo and store it in the Shared Result Object
   Serial.println("Capturing Photo...");
-  currentResult.fb = esp_camera_fb_get();
+  currentResult.fb = camera.capture(true);
 
   if (!currentResult.fb)
   {
     Serial.println("Camera capture failed");
-    s->set_reg(s, 0x3008, 0xff, 0x42);
-    Serial.println("Sensor in Sleep Mode.");
     ringLight.off();
     return;
   }
 
   Serial.printf("Success! Photo size: %zu bytes\n", currentResult.fb->len);
-  s->set_reg(s, 0x3008, 0xff, 0x42);
   ringLight.off();
   delay(500);
 
@@ -265,10 +273,6 @@ void captureToResult()
   // Clear global pointer (don't free the FB yet, webserver needs it!)
   loop_fb = NULL;
   // --- END AI INFERENCE ---
-
-  // E. GO TO SLEEP (Cool down)
-  s->set_reg(s, 0x3008, 0xff, 0x42);
-  Serial.println("Sensor in Sleep Mode.");
 }
 
 // --- Lookup Table & Helpers ---
@@ -420,42 +424,11 @@ void setup()
   // SPEED LIMIT: Force 100kHz so we don't crash the Camera
   Wire.setClock(100000);
 
-  camera_config_t config;
-  config.ledc_channel = LEDC_CHANNEL_0;
-  config.ledc_timer = LEDC_TIMER_0;
-  config.pin_d0 = Y2_GPIO_NUM;
-  config.pin_d1 = Y3_GPIO_NUM;
-  config.pin_d2 = Y4_GPIO_NUM;
-  config.pin_d3 = Y5_GPIO_NUM;
-  config.pin_d4 = Y6_GPIO_NUM;
-  config.pin_d5 = Y7_GPIO_NUM;
-  config.pin_d6 = Y8_GPIO_NUM;
-  config.pin_d7 = Y9_GPIO_NUM;
-  config.pin_xclk = XCLK_GPIO_NUM;
-  config.pin_pclk = PCLK_GPIO_NUM;
-  config.pin_vsync = VSYNC_GPIO_NUM;
-  config.pin_href = HREF_GPIO_NUM;
-  config.pin_sccb_sda = -1;
-  config.pin_sccb_scl = -1;
-  // CRITICAL: Force Hardware I2C (Port 0)
-  config.sccb_i2c_port = 0;
-  config.pin_pwdn = PWDN_GPIO_NUM;
-  config.pin_reset = RESET_GPIO_NUM;
-  config.xclk_freq_hz = 24000000;
-  config.frame_size = FRAMESIZE_QVGA;
-  config.pixel_format = PIXFORMAT_RGB565;
-  config.grab_mode = CAMERA_GRAB_LATEST;
-  config.fb_location = CAMERA_FB_IN_PSRAM;
-  config.jpeg_quality = 12;
-  config.fb_count = 1;
-
-  // initialise camera with config settings defined above
-  // esp_camera_init expected to return "ESP_OK"
-  esp_err_t err = esp_camera_init(&config);
-
-  if (err != ESP_OK)
+  // --- 1. CONFIGURE CAMERA (Primary Device) ---
+  Serial.println("Initializing Camera...");
+  if (!camera.initialize())
   {
-    Serial.printf("Camera init failed with error 0x%x", err);
+    Serial.println("Camera Init Failed");
     return;
   }
 
@@ -472,33 +445,6 @@ void setup()
   if (!luxSensor.initialize())
   {
     Serial.println("Lux sensor init failed");
-  }
-
-  // s is pointer to camera sensor
-  sensor_t *s = esp_camera_sensor_get();
-
-  // 1. Start the AF object
-  if (ov5640.start(s))
-  {
-    Serial.println("OV5640 AF Started");
-
-    // 2. Load AF firmware
-    if (ov5640.focusInit() == 0)
-    {
-      Serial.println("OV5640 Focus Init Successful");
-    }
-
-    // 3. Start AF
-    if (ov5640.autoFocusMode() == 0)
-    {
-      Serial.println("OV5640_Auto_Focus Successful!");
-    }
-
-    if (s)
-    {
-      s->set_reg(s, 0x3008, 0xff, 0x42); // Start in Sleep Mode to prevent overheating
-      Serial.println("Sensor in Sleep Mode. Ready.");
-    }
   }
 
   ringLight.initialize();
