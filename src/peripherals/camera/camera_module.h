@@ -38,9 +38,9 @@ public:
         config_.pin_pclk = PCLK_GPIO_NUM;
         config_.pin_vsync = VSYNC_GPIO_NUM;
         config_.pin_href = HREF_GPIO_NUM;
-        config_.pin_sccb_sda = -1;
-        config_.pin_sccb_scl = -1;
-        config_.sccb_i2c_port = 0;
+        config_.pin_sccb_sda = SIOD_GPIO_NUM;
+        config_.pin_sccb_scl = SIOC_GPIO_NUM;
+        // config_.sccb_i2c_port = 0;
         config_.pin_pwdn = PWDN_GPIO_NUM;
         config_.pin_reset = RESET_GPIO_NUM;
         config_.xclk_freq_hz = 24000000;
@@ -93,7 +93,7 @@ public:
             {
                 Serial.println("Autofocus failed");
             }
-            delay(200); // mechanical settling (same as your sketch)
+            delay(200);
         }
 
         for (int i = 0; i < flush_count; ++i)
@@ -135,7 +135,10 @@ protected:
     {
         const esp_err_t err = esp_camera_init(&config_);
         if (err != ESP_OK)
+        {
+            Serial.printf("Camera init failed with error 0x%x", err);
             return false;
+        }
 
         sensor_ = esp_camera_sensor_get();
 

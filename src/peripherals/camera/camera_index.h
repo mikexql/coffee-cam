@@ -1,6 +1,6 @@
 #pragma once
 
-static const char* index_ov5640_html = R"raw(
+static const char *index_ov5640_html = R"raw(
 <!doctype html>
 <html>
 <head>
@@ -67,6 +67,13 @@ static const char* index_ov5640_html = R"raw(
         <div style="margin-bottom:10px; font-weight:bold; color:#ccc;">Step 1: Enter Milk Volume</div>
         <input type="number" id="milk-vol" placeholder="e.g. 200 (ml)">
     </div>
+    <div class="card">
+        <div style="margin-bottom:10px; font-weight:bold; color:#ccc;">Lighting</div>
+            <label style="display:flex; align-items:center; justify-content:center; gap:10px;">
+                <input type="checkbox" id="adaptive-light" checked>
+                <span>Adaptive lighting (setLux)</span>
+            </label>
+    </div>
 
     <div class="card">
         <button class="btn-empty" onclick="triggerAction('empty')">2. Capture Empty Pitcher</button>
@@ -110,8 +117,9 @@ static const char* index_ov5640_html = R"raw(
       if(cmd == 'end') document.querySelector('.btn-end').innerText = "Processing...";
 
       const vol = document.getElementById('milk-vol').value || 0;
+      const adaptive = document.getElementById('adaptive-light').checked ? 1 : 0;
 
-      fetch('/action?cmd=' + cmd + '&vol=' + vol)
+      fetch('/action?cmd=' + cmd + '&vol=' + vol + '&adaptive=' + adaptive)
       .then(r => r.json())
       .then(data => {
         if(cmd == 'end') document.querySelector('.btn-end').innerText = "3. Evaluate Froth";

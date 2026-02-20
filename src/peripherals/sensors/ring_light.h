@@ -21,7 +21,9 @@ public:
           r_(255),
           g_(255),
           b_(255),
-          is_on_(false)
+          is_on_(false),
+          mask_(NULL),
+          use_mask_(false)
     {
     }
 
@@ -31,6 +33,16 @@ public:
         ring_.clear();
         ring_.setBrightness(brightness_);
         ring_.show();
+
+        if (!mask_ && count_ > 0)
+        {
+            mask_ = new uint8_t[count_];
+            for (int i = 0; i < count_; ++i)
+            {
+                mask_[i] = 0;
+            }
+        }
+
         return true;
     }
 
@@ -55,8 +67,44 @@ public:
 
     bool on(int r = 255, int g = 255, int b = 255)
     {
+        use_mask_ = false;
         setColor(r, g, b);
         is_on_ = true;
+        apply_();
+        return true;
+    }
+
+    template <size_t N>
+    bool onWithPositions(const int (&positions)[N], int r = 255, int g = 255, int b = 255)
+    {
+        return onWithPositions(positions, static_cast<int>(N), r, g, b);
+    }
+
+    bool onWithPositions(const int *positions, int position_count, int r = 255, int g = 255, int b = 255)
+    {
+        if (!positions || position_count <= 0 || !mask_)
+        {
+            return off();
+        }
+
+        setColor(r, g, b);
+        is_on_ = true;
+        use_mask_ = true;
+
+        for (int i = 0; i < count_; ++i)
+        {
+            mask_[i] = 0;
+        }
+
+        for (int i = 0; i < position_count; ++i)
+        {
+            int idx = positions[i];
+            if (idx >= 0 && idx < count_)
+            {
+                mask_[idx] = 1;
+            }
+        }
+
         apply_();
         return true;
     }
@@ -105,7 +153,14 @@ private:
         ring_.setBrightness(brightness_);
         for (int i = 0; i < count_; ++i)
         {
-            ring_.setPixelColor(i, ring_.Color(r_, g_, b_));
+            if (use_mask_ && mask_ && mask_[i] == 0)
+            {
+                ring_.setPixelColor(i, 0);
+            }
+            else
+            {
+                ring_.setPixelColor(i, ring_.Color(r_, g_, b_));
+            }
         }
         ring_.show();
     }
@@ -119,6 +174,9 @@ private:
     uint8_t g_;
     uint8_t b_;
     bool is_on_;
+    // Add these members (near the other private fields)
+    uint8_t *mask_;
+    bool use_mask_;
 };
 
 #endif // RING_LIGHT_H

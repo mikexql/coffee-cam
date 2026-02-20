@@ -25,14 +25,15 @@
 
 // Pick the GPIO your ringlight data line uses (change to your wiring)
 #define RING_PIN 14
-#define RING_COUNT 12
+#define RING_COUNT 1
 #define RING_BRIGHTNESS 155
+const int positions[] = {6};
 
 // Global instances
 Camera camera("Camera", true, true);
-LuxSensor luxSensor("LuxSensor", BH1750::CONTINUOUS_HIGH_RES_MODE, 1.0f, 3);
+// LuxSensor luxSensor("LuxSensor", BH1750::CONTINUOUS_HIGH_RES_MODE, 1.0f, 3);
 TofSensor tofSensor("ToF", false, 200, 3);
-RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
+// RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
 
 // Initialize all fields of microfoam_logic
 MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
@@ -40,119 +41,122 @@ MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "-
 // Global helper for AI buffer
 static camera_fb_t *loop_fb = NULL;
 
+bool useAdaptiveLighting = true;
+
 // Tunables
-const int LUX_DEADBAND = 8; // your suggested deadband
+const int LUX_DEADBAND = 5; // your suggested deadband
 const int MAX_STEPS = 16;   // safety limit for binary search
 const int RAMP_STEP = 32;   // coarse brightness step for ramp
 const int SETTLE_MS = 150;  // time for sensor & light to stabilise
 
-void setLux(int target_lux)
-{
-  Serial.printf("Setting target lux: %d\n", target_lux);
+// void setLux(int target_lux)
+// {
+//   Serial.printf("Setting target lux: %d\n", target_lux);
 
-  // --- Phase 0: start from dark ---
-  uint8_t brightness = 0;
-  ringLight.setBrightness(brightness);
-  ringLight.on();
-  delay(SETTLE_MS);
+//   // --- Phase 0: start from dark ---
+//   uint8_t brightness = 0;
+//   ringLight.setBrightness(brightness);
+//   // ringLight.onWithPositions(positions, 255, 255, 255);
+//   ringLight.on(255, 255, 255);
+//   delay(SETTLE_MS);
 
-  float lux = luxSensor.read().value;
-  Serial.printf("Initial lux: %.2f (bright=%u)\n", lux, brightness);
+//   float lux = luxSensor.read().value;
+//   Serial.printf("Initial lux: %.2f (bright=%u)\n", lux, brightness);
 
-  // Edge case: already bright enough from ambient
-  if (lux >= target_lux - LUX_DEADBAND)
-  {
-    Serial.println("Ambient light already within target range, no adjustment needed.");
-    return;
-  }
+//   // Edge case: already bright enough from ambient
+//   if (lux >= target_lux - LUX_DEADBAND)
+//   {
+//     Serial.println("Ambient light already within target range, no adjustment needed.");
+//     return;
+//   }
 
-  // --- Phase 1: ramp up until we cross the target or hit max brightness ---
-  uint8_t lowB = brightness; // brightness known to be too dark
-  float lowLux = lux;
+//   // --- Phase 1: ramp up until we cross the target or hit max brightness ---
+//   uint8_t lowB = brightness; // brightness known to be too dark
+//   float lowLux = lux;
 
-  uint8_t highB = 255; // will be updated once we cross
-  float highLux = lux;
+//   uint8_t highB = 255; // will be updated once we cross
+//   float highLux = lux;
 
-  while (lux < target_lux - LUX_DEADBAND && brightness < 255)
-  {
-    // coarse step up
-    brightness = (uint8_t)min<int>(brightness + RAMP_STEP, 255);
-    ringLight.setBrightness(brightness);
-    delay(SETTLE_MS);
-    lux = luxSensor.read().value;
+//   while (lux < target_lux - LUX_DEADBAND && brightness < 255)
+//   {
+//     // coarse step up
+//     brightness = (uint8_t)min<int>(brightness + RAMP_STEP, 255);
+//     ringLight.setBrightness(brightness);
+//     delay(SETTLE_MS);
+//     lux = luxSensor.read().value;
 
-    Serial.printf("[RAMP] bright=%u, lux=%.2f\n", brightness, lux);
+//     Serial.printf("[RAMP] bright=%u, lux=%.2f\n", brightness, lux);
 
-    if (lux < target_lux - LUX_DEADBAND)
-    {
-      lowB = brightness;
-      lowLux = lux;
-    }
-    else
-    {
-      highB = brightness;
-      highLux = lux;
-      break; // we crossed the target
-    }
-  }
+//     if (lux < target_lux - LUX_DEADBAND)
+//     {
+//       lowB = brightness;
+//       lowLux = lux;
+//     }
+//     else
+//     {
+//       highB = brightness;
+//       highLux = lux;
+//       break; // we crossed the target
+//     }
+//   }
 
-  // If even at max brightness we never reached target_lux, just keep max
-  if (brightness == 255 && lux < target_lux - LUX_DEADBAND)
-  {
-    Serial.println("Warning: cannot reach target lux even at max brightness.");
-    return;
-  }
+//   // If even at max brightness we never reached target_lux, just keep max
+//   if (brightness == 255 && lux < target_lux - LUX_DEADBAND)
+//   {
+//     Serial.println("Warning: cannot reach target lux even at max brightness.");
+//     return;
+//   }
 
-  // --- Phase 2: binary search between lowB and highB ---
-  for (int step = 0; step < MAX_STEPS; step++)
-  {
-    // If already good enough, stop
-    float err = target_lux - lux;
-    if (fabs(err) <= LUX_DEADBAND)
-    {
-      Serial.printf("Converged: lux=%.2f within deadband ±%d (bright=%u)\n",
-                    lux, LUX_DEADBAND, brightness);
-      break;
-    }
+//   // --- Phase 2: binary search between lowB and highB ---
+//   for (int step = 0; step < MAX_STEPS; step++)
+//   {
+//     // If already good enough, stop
+//     float err = target_lux - lux;
+//     if (fabs(err) <= LUX_DEADBAND)
+//     {
+//       Serial.printf("Converged: lux=%.2f within deadband ±%d (bright=%u)\n",
+//                     lux, LUX_DEADBAND, brightness);
+//       break;
+//     }
 
-    // Classic binary search on brightness
-    uint8_t midB = (uint8_t)((lowB + highB) / 2);
-    ringLight.setBrightness(midB);
-    delay(SETTLE_MS);
-    float midLux = luxSensor.read().value;
+//     // Classic binary search on brightness
+//     uint8_t midB = (uint8_t)((lowB + highB) / 2);
+//     ringLight.setBrightness(midB);
+//     delay(SETTLE_MS);
+//     float midLux = luxSensor.read().value;
 
-    Serial.printf("[BIN] low=(%u, %.2f) mid=(%u, %.2f) high=(%u, %.2f)\n",
-                  lowB, lowLux, midB, midLux, highB, highLux);
+//     Serial.printf("[BIN] low=(%u, %.2f) mid=(%u, %.2f) high=(%u, %.2f)\n",
+//                   lowB, lowLux, midB, midLux, highB, highLux);
 
-    // Decide which side the target is on
-    if (midLux < target_lux - LUX_DEADBAND)
-    {
-      // still too dark → move low up
-      lowB = midB;
-      lowLux = midLux;
-    }
-    else if (midLux > target_lux + LUX_DEADBAND)
-    {
-      // too bright → move high down
-      highB = midB;
-      highLux = midLux;
-    }
-    else
-    {
-      // inside deadband → good enough
-      brightness = midB;
-      lux = midLux;
-      Serial.printf("Binary search landed inside deadband: lux=%.2f, bright=%u\n",
-                    lux, brightness);
-      break;
-    }
+//     // Decide which side the target is on
+//     if (midLux < target_lux - LUX_DEADBAND)
+//     {
+//       // still too dark → move low up
+//       lowB = midB;
+//       lowLux = midLux;
+//     }
+//     else if (midLux > target_lux + LUX_DEADBAND)
+//     {
+//       // too bright → move high down
+//       highB = midB;
+//       highLux = midLux;
+//     }
+//     else
+//     {
+//       // inside deadband → good enough
+//       brightness = midB;
+//       lux = midLux;
+//       Serial.printf("Binary search landed inside deadband: lux=%.2f, bright=%u\n",
+//                     lux, brightness);
+//       break;
+//     }
 
-    brightness = midB;
-    lux = midLux;
-  }
+//     brightness = midB;
+//     lux = midLux;
+//   }
 
-  Serial.printf("Final lux: %.2f at brightness=%u\n", lux, brightness);
-}
+//   Serial.printf("Final lux: %.2f at brightness=%u\n", lux, brightness);
+// }
 
 void startCameraServer(); // refer to app_httpd
 
@@ -210,7 +214,16 @@ int raw_feature_get_data(size_t offset, size_t length, float *out_ptr)
 // --- Camera Module ---
 void captureToResult()
 {
-  setLux(100); // target lux for consistent lighting
+  // if (useAdaptiveLighting)
+  // {
+  //   setLux(100); // target lux for consistent lighting
+  // }
+  // else
+  // {
+  //   ringLight.setBrightness(0);
+  //   ringLight.on();
+  // }
+
   if (currentResult.fb)
   {
     esp_camera_fb_return(currentResult.fb);
@@ -223,12 +236,12 @@ void captureToResult()
   if (!currentResult.fb)
   {
     Serial.println("Camera capture failed");
-    ringLight.off();
+    // ringLight.off();
     return;
   }
 
   Serial.printf("Success! Photo size: %zu bytes\n", currentResult.fb->len);
-  ringLight.off();
+  // ringLight.off();
   delay(500);
 
   // --- START AI INFERENCE ---
@@ -418,12 +431,6 @@ void setup()
   esp_log_level_set("camera", ESP_LOG_NONE);
   esp_log_level_set("cam_hal", ESP_LOG_NONE);
 
-  // Join the I2C Bus that the camera just started
-  Wire.begin(TOF_SDA, TOF_SCL);
-
-  // SPEED LIMIT: Force 100kHz so we don't crash the Camera
-  Wire.setClock(100000);
-
   // --- 1. CONFIGURE CAMERA (Primary Device) ---
   Serial.println("Initializing Camera...");
   if (!camera.initialize())
@@ -432,8 +439,14 @@ void setup()
     return;
   }
 
+  // Join the I2C Bus that the camera just started
+  Wire.begin(TOF_SDA, TOF_SCL);
+
+  // SPEED LIMIT: Force 100kHz so we don't crash the Camera
+  Wire.setClock(100000);
+
   // --- 2. CONFIGURE TOF SENSOR (Secondary Device) ---
-  Serial.println("Initializing VL53L0X Sensor...");
+  // Serial.println("Initializing VL53L0X Sensor...");
 
   Serial.println("Initializing ToF Sensor...");
   if (!tofSensor.initialize())
@@ -441,14 +454,21 @@ void setup()
     Serial.println("ToF Failed");
   }
 
-  Serial.println("Initializing BH1750 Lux Sensor...");
-  if (!luxSensor.initialize())
-  {
-    Serial.println("Lux sensor init failed");
-  }
+  // Serial.println("Initializing BH1750 Lux Sensor...");
+  // if (!luxSensor.initialize())
+  // {
+  //   Serial.println("Lux sensor init failed");
+  // }
 
-  ringLight.initialize();
-  ringLight.setBrightness(RING_BRIGHTNESS);
+  // ringLight.initialize();
+  // for (int i = 0; i < RING_COUNT; ++i)
+  // {
+  //   const int pos[] = {i};
+  //   ringLight.onWithPositions(pos, 255, 255, 255);
+  //   delay(300);
+  // }
+  // ringLight.off();
+  // ringLight.setBrightness(RING_BRIGHTNESS);
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false); // Wifi active 100% of the time
