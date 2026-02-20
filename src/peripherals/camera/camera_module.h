@@ -38,9 +38,8 @@ public:
         config_.pin_pclk = PCLK_GPIO_NUM;
         config_.pin_vsync = VSYNC_GPIO_NUM;
         config_.pin_href = HREF_GPIO_NUM;
-        config_.pin_sccb_sda = -1;
-        config_.pin_sccb_scl = -1;
-        config_.sccb_i2c_port = 0;
+        config_.pin_sccb_sda = SIOD_GPIO_NUM;
+        config_.pin_sccb_scl = SIOC_GPIO_NUM;
         config_.pin_pwdn = PWDN_GPIO_NUM;
         config_.pin_reset = RESET_GPIO_NUM;
         config_.xclk_freq_hz = 24000000;

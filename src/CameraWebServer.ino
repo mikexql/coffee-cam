@@ -415,14 +415,8 @@ void setup()
   // Serial.setDebugOutput(true);
   Serial.println();
 
-  esp_log_level_set("camera", ESP_LOG_NONE);
-  esp_log_level_set("cam_hal", ESP_LOG_NONE);
-
-  // Join the I2C Bus that the camera just started
-  Wire.begin(TOF_SDA, TOF_SCL);
-
-  // SPEED LIMIT: Force 100kHz so we don't crash the Camera
-  Wire.setClock(100000);
+  esp_log_level_set("camera", ESP_LOG_VERBOSE);
+  esp_log_level_set("cam_hal", ESP_LOG_VERBOSE);
 
   // --- 1. CONFIGURE CAMERA (Primary Device) ---
   Serial.println("Initializing Camera...");
@@ -431,6 +425,12 @@ void setup()
     Serial.println("Camera Init Failed");
     return;
   }
+
+    // Join the I2C Bus that the camera just started
+  Wire.begin(TOF_SDA, TOF_SCL);
+
+  // SPEED LIMIT: Force 100kHz so we don't crash the Camera
+  Wire.setClock(100000);
 
   // --- 2. CONFIGURE TOF SENSOR (Secondary Device) ---
   Serial.println("Initializing VL53L0X Sensor...");
