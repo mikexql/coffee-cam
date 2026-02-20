@@ -428,8 +428,8 @@ void setup()
   // Serial.setDebugOutput(true);
   Serial.println();
 
-  esp_log_level_set("camera", ESP_LOG_NONE);
-  esp_log_level_set("cam_hal", ESP_LOG_NONE);
+  esp_log_level_set("camera", ESP_LOG_VERBOSE);
+  esp_log_level_set("cam_hal", ESP_LOG_VERBOSE);
 
   // --- 1. CONFIGURE CAMERA (Primary Device) ---
   Serial.println("Initializing Camera...");
