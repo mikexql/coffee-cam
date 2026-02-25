@@ -7,6 +7,7 @@
 #include "lux_sensor.h"
 #include "tof_sensor.h"
 #include "camera_module.h"
+#include "screen/screen.h"
 
 #include <milk_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
@@ -33,7 +34,8 @@ const int positions[] = {6};
 Camera camera("Camera", true, true);
 // LuxSensor luxSensor("LuxSensor", BH1750::CONTINUOUS_HIGH_RES_MODE, 1.0f, 3);
 TofSensor tofSensor("ToF", false, 200, 3);
-// RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
+RingLight ringLight("RingLight", RING_PIN, RING_COUNT);
+Screen screen("Screen");
 
 // Initialize all fields of microfoam_logic
 MicrofoamResult currentResult = {{0, 0, 0}, 0, 0, 0, 0, 0, 0, 0.0, 0.0, "--", "--", 0.0, NULL};
@@ -433,11 +435,13 @@ void setup()
 
   // --- 1. CONFIGURE CAMERA (Primary Device) ---
   Serial.println("Initializing Camera...");
+  delay(500); // let PSU stabilise
   if (!camera.initialize())
   {
     Serial.println("Camera Init Failed");
     return;
   }
+  delay(300);
 
   // Join the I2C Bus that the camera just started
   Wire.begin(TOF_SDA, TOF_SCL);
@@ -453,22 +457,26 @@ void setup()
   {
     Serial.println("ToF Failed");
   }
+  delay(200);
 
-  // Serial.println("Initializing BH1750 Lux Sensor...");
-  // if (!luxSensor.initialize())
-  // {
-  //   Serial.println("Lux sensor init failed");
-  // }
+  Serial.println("Initializing BH1750 Lux Sensor...");
+  if (!luxSensor.initialize())
+  {
+    Serial.println("Lux sensor init failed");
+  }
+  delay(200);
 
-  // ringLight.initialize();
-  // for (int i = 0; i < RING_COUNT; ++i)
-  // {
-  //   const int pos[] = {i};
-  //   ringLight.onWithPositions(pos, 255, 255, 255);
-  //   delay(300);
-  // }
-  // ringLight.off();
-  // ringLight.setBrightness(RING_BRIGHTNESS);
+  ringLight.initialize();
+  ringLight.setBrightness(RING_BRIGHTNESS);
+  delay(200);
+
+  // --- 4. CONFIGURE DISPLAY ---
+  Serial.println("Initializing ST77916 Display...");
+  delay(300); // extra settle before display powers up
+  if (!screen.initialize())
+  {
+    Serial.println("Display init failed — continuing without screen");
+  }
 
   WiFi.begin(ssid, password);
   WiFi.setSleep(false); // Wifi active 100% of the time
