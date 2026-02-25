@@ -5,14 +5,14 @@
 #include "peripheral.h"
 
 // ---- TFT Pin Definitions ----
-#define TFT_BL   10   // Backlight PWM
-#define TFT_SCK  12   // Clock
-#define TFT_D0   11   // Data 0
-#define TFT_D1   13   // Data 1
-#define TFT_D2   14   // Data 2
-#define TFT_D3    9   // Data 3
-#define TFT_RST   3   // Reset
-#define TFT_CS   41   // Chip Select (moved off GPIO 0 — strapping pin)
+#define TFT_BL 10  // Backlight PWM
+#define TFT_SCK 12 // Clock
+#define TFT_D0 11  // Data 0
+#define TFT_D1 13  // Data 1
+#define TFT_D2 14  // Data 2
+#define TFT_D3 9   // Data 3
+#define TFT_RST 3  // Reset
+#define TFT_CS 41  // Chip Select (moved off GPIO 0 — strapping pin)
 
 // ---- Custom ST77916 init sequence ----
 static const uint8_t custom_st77916_init[] = {
@@ -223,8 +223,7 @@ static const uint8_t custom_st77916_init[] = {
     BEGIN_WRITE,
     WRITE_C8_D8, 0x29, 0x00, // Display on
     WRITE_C8_D8, 0x3A, 0x55, // 16-bit color
-    END_WRITE
-};
+    END_WRITE};
 
 class Screen : public Peripheral
 {
@@ -250,14 +249,13 @@ public:
         );
         gfx_ = new Arduino_ST77916(
             bus_,
-            TFT_RST,       // Reset pin
-            0,             // Rotation (0-3)
-            true,          // IPS panel
-            360,           // Width
-            360,           // Height
-            0, 0, 0, 0,   // col/row offsets
-            custom_st77916_init, sizeof(custom_st77916_init)
-        );
+            TFT_RST,    // Reset pin
+            0,          // Rotation (0-3)
+            true,       // IPS panel
+            360,        // Width
+            360,        // Height
+            0, 0, 0, 0, // col/row offsets
+            custom_st77916_init, sizeof(custom_st77916_init));
 
         if (!gfx_->begin())
         {

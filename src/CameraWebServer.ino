@@ -7,7 +7,7 @@
 #include "lux_sensor.h"
 #include "tof_sensor.h"
 #include "camera_module.h"
-#include "screen/screen.h"
+#include "screen.h"
 
 #include <milk_inferencing.h>
 #include "edge-impulse-sdk/dsp/image/image.hpp"
