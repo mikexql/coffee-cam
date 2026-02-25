@@ -1,0 +1,288 @@
+#ifndef SCREEN_H
+#define SCREEN_H
+
+#include <Arduino_GFX_Library.h>
+#include "peripheral.h"
+
+// ---- TFT Pin Definitions ----
+#define TFT_BL   10   // Backlight PWM
+#define TFT_SCK  12   // Clock
+#define TFT_D0   11   // Data 0
+#define TFT_D1   13   // Data 1
+#define TFT_D2   14   // Data 2
+#define TFT_D3    9   // Data 3
+#define TFT_RST   3   // Reset
+#define TFT_CS   41   // Chip Select (moved off GPIO 0 — strapping pin)
+
+// ---- Custom ST77916 init sequence ----
+static const uint8_t custom_st77916_init[] = {
+    BEGIN_WRITE,
+    // Initial config
+    WRITE_C8_D8, 0xF0, 0x28,
+    WRITE_C8_D8, 0xF2, 0x28,
+    WRITE_C8_D8, 0x73, 0xF0,
+    WRITE_C8_D8, 0x7C, 0xD1,
+    WRITE_C8_D8, 0x83, 0xE0,
+    WRITE_C8_D8, 0x84, 0x61,
+    WRITE_C8_D8, 0xF2, 0x82,
+    WRITE_C8_D8, 0xF0, 0x00,
+    // Page 1 - Power/VCOM
+    WRITE_C8_D8, 0xF0, 0x01,
+    WRITE_C8_D8, 0xF1, 0x01,
+    WRITE_C8_D8, 0xB0, 0x56,
+    WRITE_C8_D8, 0xB1, 0x4D,
+    WRITE_C8_D8, 0xB2, 0x24,
+    WRITE_C8_D8, 0xB4, 0x87,
+    WRITE_C8_D8, 0xB5, 0x44,
+    WRITE_C8_D8, 0xB6, 0x8B,
+    WRITE_C8_D8, 0xB7, 0x40,
+    WRITE_C8_D8, 0xB8, 0x86,
+    WRITE_C8_D8, 0xBA, 0x00,
+    WRITE_C8_D8, 0xBB, 0x08,
+    WRITE_C8_D8, 0xBC, 0x08,
+    WRITE_C8_D8, 0xBD, 0x00,
+    WRITE_C8_D8, 0xC0, 0x80,
+    WRITE_C8_D8, 0xC1, 0x10,
+    WRITE_C8_D8, 0xC2, 0x37,
+    WRITE_C8_D8, 0xC3, 0x80,
+    WRITE_C8_D8, 0xC4, 0x10,
+    WRITE_C8_D8, 0xC5, 0x37,
+    WRITE_C8_D8, 0xC6, 0xA9,
+    WRITE_C8_D8, 0xC7, 0x41,
+    WRITE_C8_D8, 0xC8, 0x01,
+    WRITE_C8_D8, 0xC9, 0xA9,
+    WRITE_C8_D8, 0xCA, 0x41,
+    WRITE_C8_D8, 0xCB, 0x01,
+    WRITE_C8_D8, 0xD0, 0x91,
+    WRITE_C8_D8, 0xD1, 0x68,
+    WRITE_C8_D8, 0xD2, 0x68,
+    WRITE_C8_D16, 0xF5, 0x00, 0xA5,
+    WRITE_C8_D8, 0xDD, 0x4F,
+    WRITE_C8_D8, 0xDE, 0x4F,
+    WRITE_C8_D8, 0xF1, 0x10,
+    WRITE_C8_D8, 0xF0, 0x00,
+    // Page 2 - Gamma
+    WRITE_C8_D8, 0xF0, 0x02,
+    WRITE_COMMAND_8, 0xE0,
+    WRITE_BYTES, 14,
+    0xF0, 0x0A, 0x10, 0x09,
+    0x09, 0x36, 0x35, 0x33,
+    0x4A, 0x29, 0x15, 0x15,
+    0x2E, 0x34,
+    WRITE_COMMAND_8, 0xE1,
+    WRITE_BYTES, 14,
+    0xF0, 0x0A, 0x0F, 0x08,
+    0x08, 0x05, 0x34, 0x33,
+    0x4A, 0x39, 0x15, 0x15,
+    0x2D, 0x33,
+    // Page 3 - Gate/Source timing
+    WRITE_C8_D8, 0xF0, 0x10,
+    WRITE_C8_D8, 0xF3, 0x10,
+    WRITE_C8_D8, 0xE0, 0x07,
+    WRITE_C8_D8, 0xE1, 0x00,
+    WRITE_C8_D8, 0xE2, 0x00,
+    WRITE_C8_D8, 0xE3, 0x00,
+    WRITE_C8_D8, 0xE4, 0xE0,
+    WRITE_C8_D8, 0xE5, 0x06,
+    WRITE_C8_D8, 0xE6, 0x21,
+    WRITE_C8_D8, 0xE7, 0x01,
+    WRITE_C8_D8, 0xE8, 0x05,
+    WRITE_C8_D8, 0xE9, 0x02,
+    WRITE_C8_D8, 0xEA, 0xDA,
+    WRITE_C8_D8, 0xEB, 0x00,
+    WRITE_C8_D8, 0xEC, 0x00,
+    WRITE_C8_D8, 0xED, 0x0F,
+    WRITE_C8_D8, 0xEE, 0x00,
+    WRITE_C8_D8, 0xEF, 0x00,
+    WRITE_C8_D8, 0xF8, 0x00,
+    WRITE_C8_D8, 0xF9, 0x00,
+    WRITE_C8_D8, 0xFA, 0x00,
+    WRITE_C8_D8, 0xFB, 0x00,
+    WRITE_C8_D8, 0xFC, 0x00,
+    WRITE_C8_D8, 0xFD, 0x00,
+    WRITE_C8_D8, 0xFE, 0x00,
+    WRITE_C8_D8, 0xFF, 0x00,
+    // Gate driver
+    WRITE_C8_D8, 0x60, 0x40,
+    WRITE_C8_D8, 0x61, 0x04,
+    WRITE_C8_D8, 0x62, 0x00,
+    WRITE_C8_D8, 0x63, 0x42,
+    WRITE_C8_D8, 0x64, 0xD9,
+    WRITE_C8_D8, 0x65, 0x00,
+    WRITE_C8_D8, 0x66, 0x00,
+    WRITE_C8_D8, 0x67, 0x00,
+    WRITE_C8_D8, 0x68, 0x00,
+    WRITE_C8_D8, 0x69, 0x00,
+    WRITE_C8_D8, 0x6A, 0x00,
+    WRITE_C8_D8, 0x6B, 0x00,
+    WRITE_C8_D8, 0x70, 0x40,
+    WRITE_C8_D8, 0x71, 0x03,
+    WRITE_C8_D8, 0x72, 0x00,
+    WRITE_C8_D8, 0x73, 0x42,
+    WRITE_C8_D8, 0x74, 0xD8,
+    WRITE_C8_D8, 0x75, 0x00,
+    WRITE_C8_D8, 0x76, 0x00,
+    WRITE_C8_D8, 0x77, 0x00,
+    WRITE_C8_D8, 0x78, 0x00,
+    WRITE_C8_D8, 0x79, 0x00,
+    WRITE_C8_D8, 0x7A, 0x00,
+    WRITE_C8_D8, 0x7B, 0x00,
+    // Source driver
+    WRITE_C8_D8, 0x80, 0x48,
+    WRITE_C8_D8, 0x81, 0x00,
+    WRITE_C8_D8, 0x82, 0x06,
+    WRITE_C8_D8, 0x83, 0x02,
+    WRITE_C8_D8, 0x84, 0xD6,
+    WRITE_C8_D8, 0x85, 0x04,
+    WRITE_C8_D8, 0x86, 0x00,
+    WRITE_C8_D8, 0x87, 0x00,
+    WRITE_C8_D8, 0x88, 0x48,
+    WRITE_C8_D8, 0x89, 0x00,
+    WRITE_C8_D8, 0x8A, 0x08,
+    WRITE_C8_D8, 0x8B, 0x02,
+    WRITE_C8_D8, 0x8C, 0xD8,
+    WRITE_C8_D8, 0x8D, 0x04,
+    WRITE_C8_D8, 0x8E, 0x00,
+    WRITE_C8_D8, 0x8F, 0x00,
+    WRITE_C8_D8, 0x90, 0x48,
+    WRITE_C8_D8, 0x91, 0x00,
+    WRITE_C8_D8, 0x92, 0x0A,
+    WRITE_C8_D8, 0x93, 0x02,
+    WRITE_C8_D8, 0x94, 0xDA,
+    WRITE_C8_D8, 0x95, 0x04,
+    WRITE_C8_D8, 0x96, 0x00,
+    WRITE_C8_D8, 0x97, 0x00,
+    WRITE_C8_D8, 0x98, 0x48,
+    WRITE_C8_D8, 0x99, 0x00,
+    WRITE_C8_D8, 0x9A, 0x0C,
+    WRITE_C8_D8, 0x9B, 0x02,
+    WRITE_C8_D8, 0x9C, 0xDC,
+    WRITE_C8_D8, 0x9D, 0x04,
+    WRITE_C8_D8, 0x9E, 0x00,
+    WRITE_C8_D8, 0x9F, 0x00,
+    WRITE_C8_D8, 0xA0, 0x48,
+    WRITE_C8_D8, 0xA1, 0x00,
+    WRITE_C8_D8, 0xA2, 0x05,
+    WRITE_C8_D8, 0xA3, 0x02,
+    WRITE_C8_D8, 0xA4, 0xD5,
+    WRITE_C8_D8, 0xA5, 0x04,
+    WRITE_C8_D8, 0xA6, 0x00,
+    WRITE_C8_D8, 0xA7, 0x00,
+    WRITE_C8_D8, 0xA8, 0x48,
+    WRITE_C8_D8, 0xA9, 0x00,
+    WRITE_C8_D8, 0xAA, 0x07,
+    WRITE_C8_D8, 0xAB, 0x02,
+    WRITE_C8_D8, 0xAC, 0xD7,
+    WRITE_C8_D8, 0xAD, 0x04,
+    WRITE_C8_D8, 0xAE, 0x00,
+    WRITE_C8_D8, 0xAF, 0x00,
+    WRITE_C8_D8, 0xB0, 0x48,
+    WRITE_C8_D8, 0xB1, 0x00,
+    WRITE_C8_D8, 0xB2, 0x09,
+    WRITE_C8_D8, 0xB3, 0x02,
+    WRITE_C8_D8, 0xB4, 0xD9,
+    WRITE_C8_D8, 0xB5, 0x04,
+    WRITE_C8_D8, 0xB6, 0x00,
+    WRITE_C8_D8, 0xB7, 0x00,
+    WRITE_C8_D8, 0xB8, 0x48,
+    WRITE_C8_D8, 0xB9, 0x00,
+    WRITE_C8_D8, 0xBA, 0x0B,
+    WRITE_C8_D8, 0xBB, 0x02,
+    WRITE_C8_D8, 0xBC, 0xDB,
+    WRITE_C8_D8, 0xBD, 0x04,
+    WRITE_C8_D8, 0xBE, 0x00,
+    WRITE_C8_D8, 0xBF, 0x00,
+    // MUX config
+    WRITE_C8_D8, 0xC0, 0x10,
+    WRITE_C8_D8, 0xC1, 0x47,
+    WRITE_C8_D8, 0xC2, 0x56,
+    WRITE_C8_D8, 0xC3, 0x65,
+    WRITE_C8_D8, 0xC4, 0x74,
+    WRITE_C8_D8, 0xC5, 0x88,
+    WRITE_C8_D8, 0xC6, 0x99,
+    WRITE_C8_D8, 0xC7, 0x01,
+    WRITE_C8_D8, 0xC8, 0xBB,
+    WRITE_C8_D8, 0xC9, 0xAA,
+    WRITE_C8_D8, 0xD0, 0x10,
+    WRITE_C8_D8, 0xD1, 0x47,
+    WRITE_C8_D8, 0xD2, 0x56,
+    WRITE_C8_D8, 0xD3, 0x65,
+    WRITE_C8_D8, 0xD4, 0x74,
+    WRITE_C8_D8, 0xD5, 0x88,
+    WRITE_C8_D8, 0xD6, 0x99,
+    WRITE_C8_D8, 0xD7, 0x01,
+    WRITE_C8_D8, 0xD8, 0xBB,
+    WRITE_C8_D8, 0xD9, 0xAA,
+    WRITE_C8_D8, 0xF3, 0x01,
+    WRITE_C8_D8, 0xF0, 0x00,
+    // Display on sequence
+    WRITE_C8_D8, 0x21, 0x00, // Inversion on
+    WRITE_C8_D8, 0x11, 0x00, // Sleep out
+    END_WRITE,
+    DELAY, 120,
+    BEGIN_WRITE,
+    WRITE_C8_D8, 0x29, 0x00, // Display on
+    WRITE_C8_D8, 0x3A, 0x55, // 16-bit color
+    END_WRITE
+};
+
+class Screen : public Peripheral
+{
+public:
+    explicit Screen(const char *name)
+        : Peripheral(name),
+          bus_(nullptr),
+          gfx_(nullptr)
+    {
+    }
+
+    bool begin() override
+    {
+        // Allocate bus & display here (not in constructor) to avoid
+        // heap allocation and GPIO touching during static init.
+        bus_ = new Arduino_ESP32QSPI(
+            TFT_CS,  // CS
+            TFT_SCK, // SCK
+            TFT_D0,  // D0
+            TFT_D1,  // D1
+            TFT_D2,  // D2
+            TFT_D3   // D3
+        );
+        gfx_ = new Arduino_ST77916(
+            bus_,
+            TFT_RST,       // Reset pin
+            0,             // Rotation (0-3)
+            true,          // IPS panel
+            360,           // Width
+            360,           // Height
+            0, 0, 0, 0,   // col/row offsets
+            custom_st77916_init, sizeof(custom_st77916_init)
+        );
+
+        if (!gfx_->begin())
+        {
+            Serial.println("Display init FAILED!");
+            return false;
+        }
+        gfx_->displayOn();
+        delay(200);
+
+        // Backlight on
+        pinMode(TFT_BL, OUTPUT);
+        digitalWrite(TFT_BL, HIGH);
+
+        // Clear screen
+        gfx_->fillScreen(RGB565_BLACK);
+
+        Serial.println("Display initialized OK");
+        return true;
+    }
+
+    Arduino_ST77916 *getGfx() { return gfx_; }
+
+private:
+    Arduino_DataBus *bus_;
+    Arduino_ST77916 *gfx_;
+};
+
+#endif // SCREEN_H
