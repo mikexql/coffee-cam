@@ -76,7 +76,7 @@ public:
     }
     void setAutofocusEnabled(bool v) { autofocus_enabled_ = v; }
 
-    camera_fb_t *capture(bool run_autofocus = true, int flush_count = 3)
+    camera_fb_t *capture(bool run_autofocus = true, int flush_count = 4)
     {
         if (!isInitialized())
             return nullptr;
@@ -86,6 +86,8 @@ public:
         if (!wake_())
             return nullptr;
 
+        vTaskDelay(pdMS_TO_TICKS(300));
+
         if (autofocus_enabled_ && run_autofocus)
         {
             bool autofocused = autofocus_();
@@ -93,7 +95,7 @@ public:
             {
                 Serial.println("Autofocus failed");
             }
-            delay(200);
+            vTaskDelay(pdMS_TO_TICKS(200));
         }
 
         for (int i = 0; i < flush_count; ++i)
@@ -101,7 +103,7 @@ public:
             camera_fb_t *temp = esp_camera_fb_get();
             if (temp)
                 esp_camera_fb_return(temp);
-            delay(150);
+            vTaskDelay(pdMS_TO_TICKS(150));
         }
 
         last_fb_ = esp_camera_fb_get();
@@ -194,24 +196,33 @@ private:
         sensor_->set_reg(sensor_, 0x3023, 0xff, 0x01); // Handshake ACK
         sensor_->set_reg(sensor_, 0x3022, 0xff, 0x03); // Single focus command
 
+        // vTaskDelay(pdMS_TO_TICKS(500));
+
         uint8_t status = 0x00;
         const unsigned long start_time = millis();
 
         while (true)
         {
             status = sensor_->get_reg(sensor_, 0x3029, 0xff);
+            Serial.printf("AF Status: 0x%02X\n", status);
 
-            if (status == 0x10) // focused
+            if (status == 0x10)
+            { // focused
+                Serial.println("Autofocus successful");
                 return true;
-            if (status == 0x70) // idle/fail
-                return false;
+            }
+            if (status == 0x70)
+            { // idle/fail
+                vTaskDelay(pdMS_TO_TICKS(50));
+                continue;
+            }
             if (status == 0xFF) // i2c error
                 return false;
 
             if (millis() - start_time > 4000)
                 return false;
 
-            delay(50);
+            // vTaskDelay(pdMS_TO_TICKS(50));
         }
     }
 

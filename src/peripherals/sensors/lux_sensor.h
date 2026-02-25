@@ -16,8 +16,7 @@ public:
         int defaultSamples = 3)
         : Sensor<Lux>(name, defaultSamples),
           lux_(),
-          mode_(mode),
-          calibration_(calibration)
+          mode_(mode)
     {
     }
 
@@ -43,8 +42,8 @@ public:
     Lux readOnce() override
     {
         const float rawLux = lux_.readLightLevel();
-        return Lux{rawLux * calibration_};
-    }
+        return Lux{rawLux};
+    }   
 
     bool setMode(BH1750::Mode mode)
     {
@@ -54,18 +53,9 @@ public:
         return lux_.configure(mode_);
     }
 
-    bool setCalibration(float calibration)
-    {
-        if (calibration <= 0.0f)
-            return false;
-        calibration_ = calibration;
-        return true;
-    }
-
 private:
     BH1750 lux_;
     BH1750::Mode mode_;
-    float calibration_;
 };
 
 #endif // LUX_SENSOR_H
